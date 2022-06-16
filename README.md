@@ -30,7 +30,7 @@ Other mowers will be considered upon request.
 - OpenWeatherMap Driver for Hubitat supported (https://community.hubitat.com/t/openweathermap-alerts-weather-driver/38249)
 
 ## Custom Husqvarna AutoMower Connect Driver
-This app uses a custom Husqvarna AutoMower Connect driver.
+This app uses a custom Husqvarna AutoMower Connect driver. Available at https://github.com/lnjustin/autoMower. Pull request submitted to the main thread.
 
 ## Install
 Install using Hubitat Package Manager
