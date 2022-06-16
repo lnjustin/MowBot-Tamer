@@ -1,0 +1,25 @@
+{
+  "packageName": "MowBot Tamer",
+  "author": "Justin Leonard",
+  "version": "0.0.1",
+  "minimumHEVersion": "1.0",
+  "dateReleased": "2021-06-16",
+  "apps": [
+    {
+      "id": "dbd9b71f-797d-4eb7-bd46-5f287f09e508",
+      "name": "MowBot Tamer",
+      "namespace": "lnjustin",
+      "location": "https://raw.githubusercontent.com/lnjustin/MowBot-Tamer/main/MowBotTamer.groovy",
+      "required": true,
+      "oauth": false
+    },
+    {
+      "id": "a3607f90-7f29-4532-ba36-db7a3fd1633c",
+      "name": "MowBot Tamer Instance",
+      "namespace": "lnjustin",
+      "location": "https://raw.githubusercontent.com/lnjustin/MowBot-Tamer/main/MowBotTamerInstance.groovy",
+      "required": true,
+      "oauth": false
+    }
+  ]
+}
