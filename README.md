@@ -25,6 +25,12 @@ MowBot Tamer tames your otherwise unruly robot mower:
 Initial support is limited to Husqvarna Robot Mowers using the AutoMower Connect HE integration (https://community.hubitat.com/t/husqvarna-automower-integration/76550)
 Other mowers will be considered upon request.
 
-## Custom Husqvarna AutoMower Connect Driver
-This app uses a custom Husqvarna AutoMower Connect driver, 
+## Sensors and Drivers
+- Detect wet grass, due to rain or even morning dew, using the Ecowitt Leaf Wetness Sensor
+- OpenWeatherMap Driver for Hubitat supported (https://community.hubitat.com/t/openweathermap-alerts-weather-driver/38249)
 
+## Custom Husqvarna AutoMower Connect Driver
+This app uses a custom Husqvarna AutoMower Connect driver.
+
+## Install
+Install using Hubitat Package Manager
