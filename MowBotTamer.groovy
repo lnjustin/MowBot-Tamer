@@ -1,7 +1,7 @@
 /**
  *  MowBot Tamer
  *
- *  Copyright 2021 Justin Leonard
+ *  Copyright 2022 Justin Leonard
  *
  *  Licensed Virtual the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -82,16 +82,6 @@ def notify(message, type) {
     else if (type == "cuttingHeight" && settings["notifyCuttingHeight"] == true) notificationDevices.deviceNotification(message)
     else if (type == "backupRule" && settings["notifyBackupRule"] == true) notificationDevices.deviceNotification(message)
     else if (type == "stopStart" && settings["notifyStopStart"] == true) notificationDevices.deviceNotification(message)
-}
-
- public static getRGB(String hex)
-{
-    def rgb = []
-    for (int i = 0; i < 3; i++)
-    {
-        rgb[i] = (Integer.parseInt(hex.substring(i * 2 + 1, i * 2 + 3), 16)).toString()
-    }
-    return rgb
 }
 
 def footer() {
@@ -178,6 +168,5 @@ def getInterface(type, txt="", link="") {
             break
     }
 } 
-
 
 
