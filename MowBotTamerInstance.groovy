@@ -14,6 +14,7 @@
  *
  *  Change History:
  *  v0.0.1 - Beta
+ *  v0.0.2 - Fixed sunrise/sunset bug
 
  */
 import java.text.SimpleDateFormat
@@ -498,7 +499,7 @@ def isMowingScheduledForNow(gracePeriodSecs = null) {
     def now = new Date()
     if (gracePeriodSecs != null) now = adjustDateBySecs(now, gracePeriodSecs.toInteger())
     def window = getMowingWindow()
-    logDebug("isMowingScheduledForNow: mowing window is ${window}. IsMowDay = ${isMowDay(new Date())} with timeOfDayIsBetween = ${timeOfDayIsBetween(window.start, window.end, now, location.timeZone)}")
+    logDebug("isMowingScheduledForNow: now (with any grace period is) ${now}. mowing window is ${window}. IsMowDay = ${isMowDay(new Date())} with timeOfDayIsBetween = ${timeOfDayIsBetween(window.start, window.end, now, location.timeZone)}")
     if (isMowDay(new Date()) && timeOfDayIsBetween(window.start, window.end, now, location.timeZone)) {
         // In the middle of today's mowing window.
         isScheduled = true
@@ -510,6 +511,7 @@ def isMowingScheduledForNow(gracePeriodSecs = null) {
             isScheduled = true
         }
     }
+    logDebug("isMowingScheduledForNow = ${isScheduled} with gracePeriodSecs = ${gracePeriodSecs} ")
     return isScheduled
 }
 
@@ -869,7 +871,10 @@ def mowerActivityHandler(evt) {
     state.mowers[serial]?.previous.activity = state.mowers[serial]?.current.activity
     state.mowers[serial]?.current.activity = activity
     
+    logDebug("mowerActivityHandler: mower previous activity = ${state.mowers[serial]?.previous.activity}. Mower current activity = ${state.mowers[serial]?.current.activity}")
+    
     if (isMowingScheduledForNow() && (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING")) {
+        logDebug("isMowingScheduledForNow() without cushion is true. Mower started mowing.")
       // mowing activity occurred during current mowing window. Attribute to current mowing window and count mowing duration toward current mowing window's duration         
         state.mowers[serial]?.timeStartedMowing = activityTime
 
@@ -892,12 +897,14 @@ def mowerActivityHandler(evt) {
         }
     }
     else if (isMowingScheduledForNow(settings["pollingInterval"]*-1) && (state.mowers[serial]?.previous.activity == "MOWING" ||state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
+        logDebug("isMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
         state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
         
         state.mowers[serial]?.userForcingMowing = false
     }
     else if (isBackupMowingScheduledForNow() && (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING")) {
+        logDebug("isBackupMowingScheduledForNow() without cushion is true. Mower started mowing.")
         // mowing activity occurred during backup mowing window. Attribute to backup mowing window and count mowing duration toward current backup mowing window's duration 
         state.mowers[serial]?.timeStartedMowing = activityTime
         
@@ -920,12 +927,14 @@ def mowerActivityHandler(evt) {
         }
     }
     else if (isBackupMowingScheduledForNow(settings["pollingInterval"]*-1) && (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
+        logDebug("isBackupMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
         state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
         
         state.mowers[serial]?.userForcingMowing = false
     }
     else if (state.mowers[serial]?.current.activity == "MOWING") {
+        logDebug("Mower started mowing outside of any window")
         // mowing started outside of any mowing window. Assume user forced mowing and wants to keep mowing irrespective of parking/pausing conditions. 
         state.mowers[serial]?.userForcingMowing = true
         state.mowers[serial]?.parkedByApp = false
@@ -1191,6 +1200,7 @@ def parkAll(preCheckPark = false) {
             }
             else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
         }
+        else logDebug("Park command not sent. Mower not parked by app.")
     }     
 }
 
@@ -1214,6 +1224,7 @@ def parkOne(serial, preCheckPark = false) {
                }
                else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
             }
+           else logDebug("Park command not sent. Mower not parked by app.")
        }
     }     
 }
@@ -1268,7 +1279,7 @@ def isAnyParkConditionMet(backupPrecheck = false) {
 }
 
 def handleParkConditionChange() {
-    logDebug("isMowingScheduledForNow(): ${isMowingScheduledForNow()}")
+   // logDebug("isMowingScheduledForNow(): ${isMowingScheduledForNow()}")
     if (isMowingScheduledForNow() || isBackupMowingScheduledForNow()) {
         if (isAnyParkConditionMet()) {
             logDebug("Park Conditions Met")
@@ -1477,20 +1488,20 @@ def openWeatherHandler(evt) {
                     def delayRemainder = (settings["weatherWetDuration"]*60) - partialDelay
                     Integer delayRemainderMins = Math.round(delayRemainder/60)
                     def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: delayRemainderMins])
-                    def offsetSunriseTomorrow = offsetSunriseToday + 1 // approximate tomorrow's sunrise as today's sunrise
+                    def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
                     runOnce(offsetSunriseTomorrow, delayedWeather)                    
                 }
             }
             else if (now.after(dayTime.sunrise) && !dayTime.sunset.after(now)) {
                 // after sunset already, so full delay will be after sunrise tomorrow
                 def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: settings["weatherWetDuration"]])
-                def offsetSunriseTomorrow = offsetSunriseToday + 1 // approximate tomorrow's sunrise as today's sunrise
+                def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
                 runOnce(offsetSunriseTomorrow, delayedWeather)
             }
             else if (!now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 // before sunrise, so full delay will be after sunrise today
                 def offsetSunrise = getSunriseAndSunset([sunriseOffset: settings["weatherWetDuration"]])
-                runOnce(offsetSunrise, delayedWeather)
+                runOnce(offsetSunrise.sunrise, delayedWeather)
             }
         }        
     }
@@ -1591,20 +1602,20 @@ def irrigationValveHandler(evt) {
                     def delayRemainder = (settings["irrigationWetDuration"]*60) - partialDelay
                     Integer delayRemainderMins = Math.round(delayRemainder/60)
                     def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: delayRemainderMins])
-                    def offsetSunriseTomorrow = offsetSunriseToday + 1 // approximate tomorrow's sunrise as today's sunrise
+                    def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
                     runOnce(offsetSunriseTomorrow, delayedIrrigationValveClosed)                    
                 }
             }
             else if (now.after(dayTime.sunrise) && !dayTime.sunset.after(now)) {
                 // after sunset already, so full delay will be after sunrise tomorrow                
                 def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: wetDuration])
-                def offsetSunriseTomorrow = offsetSunriseToday + 1 // approximate tomorrow's sunrise as today's sunrise
+                def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
                 runOnce(offsetSunriseTomorrow, delayedIrrigationValveClosed)
             }
             else if (!now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 // before sunrise, so full delay will be after sunrise today
                 def offsetSunrise = getSunriseAndSunset([sunriseOffset: wetDuration])
-                runOnce(offsetSunrise, delayedIrrigationValveClosed)
+                runOnce(offsetSunrise.sunrise, delayedIrrigationValveClosed)
             }
         }
     }
