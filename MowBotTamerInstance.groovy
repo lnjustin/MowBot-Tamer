@@ -14,7 +14,7 @@
  *
  *  Change History:
  *  v0.0.1 - Beta
- *  v0.0.2 - Fixed sunrise/sunset bug
+ *  v0.0.2 - Bug fixes
 
  */
 import java.text.SimpleDateFormat
@@ -254,6 +254,8 @@ def updated() {
 }
 
 def selectiveUnschedule(unscheduleActivation = false) {
+    state.selectiveUnscheduleCalled = "selectiveUnschedule called at ${now()} with unscheduleActivation = ${unscheduleActivation}"
+    logDebug("selectiveUnschedule called at ${now()}")
     if (unscheduleActivation) {
         unschedule(tempTriggerCheck)
         unschedule(switchHandler)
@@ -289,6 +291,9 @@ def initialize() {
         for (mower in settings["husqvarnaMowers"]) {
             def serial = mower.currentValue("serialNumber")
             if (!state.mowers[serial]) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false]
+            state.mowers[serial].userForcingMowing = false
+            state.mowers[serial].parkedByApp = false
+            state.mowers[serial].pausedByApp = false
         }
     }
     if (isDeactivated == null || isDeactivated == false) {
@@ -316,6 +321,7 @@ def initialize() {
 }
 
 def updateActivationStatus() {
+    logDebug("updateActivationStatus called at ${now}")
     if (state.activated == true) activate() 
     else if (state.activated == false) deactivate()
 }
@@ -374,7 +380,7 @@ def getAverageOfList(list) {
 }
 
 def switchHandler(evt) {
-    activationSwitch = evt.value
+    state.activationSwitch = evt.value
     switchTriggerCheck()
 }
 
@@ -423,6 +429,7 @@ def deactivate() {
 }
 
 def activate() {
+    state.activateCalledAt = "activate called at ${now()}"
     subscribe(settings["husqvarnaMowers"], "mowerActivity", mowerActivityHandler)
     
     def notifications = parent.getNotificationTypes()
@@ -457,7 +464,30 @@ def activate() {
         scheduleMowingWindowEnd()
     }    
 
-    if (isMowingScheduledForNow()) mowingPreCheck() // if app activated in the middle of the mowing window, park mowers if park conditions met
+    if (isMowingScheduledForNow()) {
+        mowingPreCheck() // if app activated in the middle of the mowing window, park mowers if park conditions me        
+        
+        for (mower in settings["husqvarnaMowers"]) { 
+            def serial = mower.currentValue("serialNumber")
+            def activity = mower.currentValue("mowerActivity")
+            state.mowers[serial]?.current.activity = activity
+            
+            if (state.mowers[serial] != null && state.mowers[serial]?.parkedByApp == false && state.mowers[serial].userForcingMowing == false && (activity == "MOWING" || activity == "LEAVING")) {              
+                logDebug("Checking if need to park before window ends")
+                state.mowers[serial]?.timeStartedMowing = state.mowers[serial]?.timeStartedMowing == null ? now().getTime() : state.mowers[serial]?.timeStartedMowing
+                def durationLeftToMow = getRequiredMowingDuration() - state.mowers[serial]?.mowedDurationSoFar
+                def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
+                def stopByDurationDate = new Date(stopByDuration)
+                def windowEnd = getNextMowingWindowEnd()
+                logDebug("Window Ends ${windowEnd}. Stop By Time is ${stopByDurationDate}")
+                if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now())) {
+                    logDebug("Scheduling premature park for ${stopByDurationDate}")
+                    runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
+                }
+            }
+        } 
+
+    }
 }
 
 def subscribeForParkPause() {
@@ -887,7 +917,7 @@ def mowerActivityHandler(evt) {
         def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
         def stopByDurationDate = new Date(stopByDuration)
         def windowEnd = getNextMowingWindowEnd()
-        if (windowEnd.after(stopByDurationDate)) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
+        if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now())) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
         
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
             // deduce user forced mowing, since mowing started even though this app forced parking
@@ -917,7 +947,7 @@ def mowerActivityHandler(evt) {
         def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
         def stopByDurationDate = new Date(stopByDuration)
         def windowEnd = new Date(state.backup.window.end)
-        if (windowEnd.after(stopByDurationDate)) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
+        if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now())) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
         
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
             // deduce user forced mowing, since mowing started even though this app forced parking
@@ -1200,7 +1230,7 @@ def parkAll(preCheckPark = false) {
             }
             else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
         }
-        else logDebug("Park command not sent. Mower not parked by app.")
+        else logDebug("Park command not sent. Mower already parked by app.")
     }     
 }
 
@@ -1224,9 +1254,14 @@ def parkOne(serial, preCheckPark = false) {
                }
                else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
             }
-           else logDebug("Park command not sent. Mower not parked by app.")
+           else logDebug("Park command not sent. Mower already parked by app.")
        }
     }     
+}
+
+def park(data) {
+    def serial = data.serial
+    parkOne(serial)
 }
 
 def pauseOne(serial) {
