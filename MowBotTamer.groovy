@@ -14,6 +14,7 @@
  *
  *  Change History:
  *  v0.0.1 - Beta
+ *  v0.0.2 - Bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
