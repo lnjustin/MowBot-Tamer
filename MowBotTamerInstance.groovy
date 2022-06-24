@@ -15,7 +15,7 @@
  *  Change History:
  *  v0.0.1 - Beta
  *  v0.0.2 - Bug fixes
-
+ *  v0.0.3 - Delayed handling of window expiration more; More efficient handling of mowing windows
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -262,10 +262,12 @@ def selectiveUnschedule(unscheduleActivation = false) {
         unschedule(dateTriggerCheck)
     }    
     unschedule(scheduleMowers)
-    unschedule(scheduleMowingPreCheck)
+    unschedule(scheduleMowingWindowStart)
     unschedule(scheduleMowingWindowEnd)
     unschedule(mowingPreCheck)
     unschedule(handleExpiredMowingWindow)
+    unschedule(endMowingWindow)
+    unschedule(startMowingWindow)
     unschedule(backupWindowPreCheck)
     unschedule(handleExpiredBackupMowingWindow)
     unschedule(park)
@@ -451,10 +453,10 @@ def activate() {
         schedule("10 00 00 ? * " + getDayOfWeekCron(settings["daysOfWeek"]), scheduleMowers) // schedule 10 seconds after midnight to give the activation code a chance to run 1 second after midnight
     }
     if (settings["startTime"] == "Sunrise" || settings["startTime"] == "Sunset") {
-        schedule("15 00 00 ? * " + getDayOfWeekCron(settings["daysOfWeek"]), scheduleMowingPreCheck) // schedule 10 seconds after midnight to give the activation code a chance to run 1 second after midnight
+        schedule("15 00 00 ? * " + getDayOfWeekCron(settings["daysOfWeek"]), scheduleMowingWindowStart) // schedule 10 seconds after midnight to give the activation code a chance to run 1 second after midnight
     }
     else {
-        scheduleMowingPreCheck()
+        scheduleMowingWindowStart()
     }
     if (settings["endTime"] == "Sunrise" || settings["endTime"] == "Sunset") {
         if (doesMowingEndSameDay()) schedule("20 00 00 ? * " + getDayOfWeekCron(settings["daysOfWeek"]), scheduleMowingWindowEnd) // schedule 10 seconds after midnight to give the activation code a chance to run 1 second after midnight
@@ -464,7 +466,8 @@ def activate() {
         scheduleMowingWindowEnd()
     }    
 
-    if (isMowingScheduledForNow()) {
+    if (isInMowingWindow()) {
+        startMowingWindow()
         mowingPreCheck() // if app activated in the middle of the mowing window, park mowers if park conditions me        
         
         for (mower in settings["husqvarnaMowers"]) { 
@@ -488,6 +491,7 @@ def activate() {
         } 
 
     }
+    else endMowingWindow()
 }
 
 def subscribeForParkPause() {
@@ -524,12 +528,21 @@ def unsubscribeForParkPause() {
     unsubscribe(settings["pauseButtons"])        
 }
 
-def isMowingScheduledForNow(gracePeriodSecs = null) {
+def isMowingScheduledForNow(withGracePeriod = false) {
+    if (!withGracePeriod) return state.isInMowingWindow
+    else {
+        def inWindow = false
+        if (state.isInMowingWindow == true) inWindow = true
+        else if (withGracePeriod == true) inWindow = (state.isInMowingWindowGracePeriod != null) ? state.isInMowingWindowGracePeriod : false
+        return inWindow
+    }
+}
+
+def isInMowingWindow() {
     def isScheduled = false
     def now = new Date()
-    if (gracePeriodSecs != null) now = adjustDateBySecs(now, gracePeriodSecs.toInteger())
     def window = getMowingWindow()
-    logDebug("isMowingScheduledForNow: now (with any grace period is) ${now}. mowing window is ${window}. IsMowDay = ${isMowDay(new Date())} with timeOfDayIsBetween = ${timeOfDayIsBetween(window.start, window.end, now, location.timeZone)}")
+    logDebug("isInMowingWindow(): now ${now}. mowing window is ${window}. IsMowDay = ${isMowDay(new Date())} with timeOfDayIsBetween = ${timeOfDayIsBetween(window.start, window.end, now, location.timeZone)}")
     if (isMowDay(new Date()) && timeOfDayIsBetween(window.start, window.end, now, location.timeZone)) {
         // In the middle of today's mowing window.
         isScheduled = true
@@ -541,8 +554,8 @@ def isMowingScheduledForNow(gracePeriodSecs = null) {
             isScheduled = true
         }
     }
-    logDebug("isMowingScheduledForNow = ${isScheduled} with gracePeriodSecs = ${gracePeriodSecs} ")
-    return isScheduled
+    logDebug("isInMowingWindow() = ${isScheduled}")
+    return isScheduled    
 }
 
 def isInMowingWindowStartedToday(gracePeriodSecs = null) {
@@ -614,21 +627,14 @@ def setNextBackupMowingWindow() {
     state.backup?.window = [start: nextBackupWindow.start.getTime(), end: nextBackupWindow.end.getTime()]
 }
 
-def isBackupMowingScheduledForNow(gracePeriodSecs = null) {
-    def isScheduled = false
-    def now = new Date()
-    if (gracePeriodSecs != null) now = adjustDateBySecs(now, gracePeriodSecs.toInteger())
-    if (state.backup == null || state.backup.window == null || state.backup.isPending == false) return isScheduled
-    
-    def backupStart = new Date(state.backup.window.start)
-    def backupEnd = new Date(state.backup.window.end)
-    
-    if (timeOfDayIsBetween(backupStart, backupEnd, now, location.timeZone)) {
-        // In the middle of backup mowing window.
-        isScheduled = true
+def isBackupMowingScheduledForNow(withGracePeriod = false) {
+    if (state.backup == null) return false
+    else {
+        def inBackupWindow = false
+        if (state.backup.inProgress == true) inBackupWindow = true
+        else if (withGracePeriod == true) inBackupWindow = (state.backup.inGracePeriod != null || state.backup.inGracePeriod == true) ? true : false
+        return inBackupWindow
     }
-    logDebug("isBackupMowingScheduledForNow: ${isScheduled}")
-    return isScheduled
 }
 
 def scheduleMowers() {
@@ -696,18 +702,35 @@ def scheduleMowers() {
     }
 }
 
-def scheduleMowingPreCheck() {
+def startMowingWindow() {
+    state.isInMowingWindow = true
+}
+
+def endMowingWindow() {
+    state.isInMowingWindow = false
+    state.isInMowingWindowGracePeriod = true
+    runIn(settings["pollingInterval"], endGracePeriod)
+}
+
+def endGracePeriod() {
+    state.isInMowingWindowGracePeriod = false
+}
+
+def scheduleMowingWindowStart() {
     if (settings["startTime"] == "Sunrise" || settings["startTime"] == "Sunset") {
         def window = getMowingWindow()
         def preCheckTime = adjustDateBySecs(window.start, -60) // schedule precheck 30 seconds before mowing start time
         logDebug("Scheduling pre-check for preCheckTime = ${preCheckTime}")
-        runOnce(preCheckTime, mowingPreCheck)       
+        runOnce(preCheckTime, mowingPreCheck)     
+        runOnce(window.start, startMowingWindow) 
     }
     else {
         def preCheckTime = adjustTimeBySecs(startTimeValue, -60) // schedule precheck 30 seconds before mowing start time
         logDebug("Scheduling pre-check for preCheckTime = ${preCheckTime}")
         def cron = getTimeOfDayCron(preCheckTime) + " ? * " + getDayOfWeekCron(settings["daysOfWeek"])
         schedule(cron, mowingPreCheck)
+        cron = getTimeOfDayCron(toDateTime(startTimeValue)) + " ? * " + getDayOfWeekCron(settings["daysOfWeek"])
+        schedule(cron, startMowingWindow)
     }
 }
 
@@ -734,9 +757,10 @@ def getDayOfWeekCron(daysOfWeek) {
 
 def scheduleMowingWindowEnd() {
     def window = getMowingWindow()
-    def windowExtension = settings["pollingInterval"].toInteger() + 5
-    def postWindowTime = adjustDateBySecs(window.end, windowExtension) // schedule postcheck after mowing end time, corresponding to polling interval, plus 5 seconds, to make sure mower activity updated
-    if (settings["endTime"] == "Sunrise" || settings["endTime"] == "Sunset") {                
+    def windowExtension = settings["pollingInterval"].toInteger() + 120
+    def postWindowTime = adjustDateBySecs(window.end, windowExtension) // schedule postcheck after mowing end time, corresponding to polling interval, plus 120 seconds, to make sure mower activity updated
+    if (settings["endTime"] == "Sunrise" || settings["endTime"] == "Sunset") {    
+        runOnce(window.end, endMowingWindow)  
         runOnce(postWindowTime, handleExpiredMowingWindow)  
     }
     else {
@@ -746,13 +770,21 @@ def scheduleMowingWindowEnd() {
             def cron = getTimeOfDayCron(postWindowTime) + " ? * " + getDayOfWeekCron(settings["daysOfWeek"])
             logDebug("Scheduling handleExpiredMowingWindow() with cron string: ${cron}")
             schedule(cron, handleExpiredMowingWindow)
+            
+            cron = getTimeOfDayCron(window.end) + " ? * " + getDayOfWeekCron(settings["daysOfWeek"])
+            logDebug("Scheduling endMowingWindow() with cron string: ${cron}")
+            schedule(cron, endMowingWindow)
         }
         else {
             // window ends the next day after it starts  
             def shiftedDays = getShiftedDaysOfWeek()
             def cron = getTimeOfDayCron(postWindowTime) + " ? * " + getDayOfWeekCron(shiftedDays)
             logDebug("Scheduling handleExpiredMowingWindow() with cron string: ${cron}")
-            schedule(cron, handleExpiredMowingWindow)            
+            schedule(cron, handleExpiredMowingWindow)    
+            
+            cron = getTimeOfDayCron(window.end) + " ? * " + getDayOfWeekCron(shiftedDays)
+            logDebug("Scheduling endMowingWindow() with cron string: ${cron}")
+            schedule(cron, endMowingWindow)
         }
     }
 }
@@ -801,11 +833,30 @@ def getShiftedDaysOfWeek() {
     return shiftedDays
 }
 
+def startBackupWindow() {
+    state.backup?.inProgress = true
+}
+
+def endBackupWindow() {
+    if (state.backup != null && state.backup != [:]) {
+        state.backup?.inProgress = false
+        state.backup?.inGracePeriod = true
+        runIn(settings["pollingInterval"], endBackupGracePeriod)
+    }
+}
+
+def endBackupGracePeriod() {
+    if (state.backup != null && state.backup != [:]) {
+        state.backup?.inGracePeriod = false   
+    }
+}
+
 def activateBackupWindow(duration) {
     if (!state.backup) state.backup = [:]
     state.backup.isPending = true
     state.backup.activatedAt = (new Date()).getTime()
     state.backup.duration = duration
+    state.backup.inProgress = false
     setNextBackupMowingWindow()
 
     scheduleMowers()
@@ -813,11 +864,13 @@ def activateBackupWindow(duration) {
     def backupStart = new Date(state.backup.window.start)
     def preCheckTime = adjustDateBySecs(backupStart, -60)
     runOnce(preCheckTime, backupWindowPreCheck) 
+    runOnce(backupStart, startBackupWindow) 
     
     def backupEnd = new Date(state.backup.window.end)
-    Integer windowExtension = settings["pollingInterval"].toInteger() + 5
-    def postWindowTime = adjustDateBySecs(backupEnd, windowExtension) // schedule postcheck after mowing end time, corresponding to polling interval, plus 5 seconds, to make sure mower activity updated              
+    Integer windowExtension = settings["pollingInterval"].toInteger() + 120
+    def postWindowTime = adjustDateBySecs(backupEnd, windowExtension) // schedule postcheck after mowing end time, corresponding to polling interval, plus 120 seconds, to make sure mower activity updated              
     runOnce(postWindowTime, handleExpiredBackupMowingWindow)  
+    runOnce(backupEnd, endBackupWindow)  
 }
 
 def backupWindowPreCheck() {
@@ -926,7 +979,7 @@ def mowerActivityHandler(evt) {
             state.mowers[serial]?.pausedByApp = false
         }
     }
-    else if (isMowingScheduledForNow(settings["pollingInterval"]*-1) && (state.mowers[serial]?.previous.activity == "MOWING" ||state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
+    else if (isMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" ||state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
         state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
@@ -956,7 +1009,7 @@ def mowerActivityHandler(evt) {
             state.mowers[serial]?.pausedByApp = false
         }
     }
-    else if (isBackupMowingScheduledForNow(settings["pollingInterval"]*-1) && (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
+    else if (isBackupMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isBackupMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
         state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
