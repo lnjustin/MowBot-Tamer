@@ -3,7 +3,7 @@
   "author": "Justin Leonard",
   "version": "0.0.4",
   "minimumHEVersion": "1.0",
-  "dateReleased": "2021-06-16",
+  "dateReleased": "2022-07-01",
   "apps": [
     {
       "id": "dbd9b71f-797d-4eb7-bd46-5f287f09e508",
@@ -20,6 +20,15 @@
       "location": "https://raw.githubusercontent.com/lnjustin/MowBot-Tamer/main/MowBotTamerInstance.groovy",
       "required": true,
       "oauth": false
+    }
+  ],
+  "drivers": [
+    {
+      "id": "189e3894-7970-4797-8b96-b9ef59eedfe3",
+      "name": "MowBot Tamer Device",
+      "namespace": "lnjustin",
+      "location": "https://raw.githubusercontent.com/lnjustin/MowBot-Tamer/main/MowBotTamerDevice.groovy",
+      "required": true
     }
   ]
 }
