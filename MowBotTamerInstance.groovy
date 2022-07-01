@@ -16,6 +16,7 @@
  *  v0.0.1 - Beta
  *  v0.0.2 - Bug fixes
  *  v0.0.3 - Delayed handling of window expiration more; More efficient handling of mowing windows
+ *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -79,8 +80,7 @@ def instancePage() {
                  input name: "tempSensor", type: "capability.temperatureMeasurement", title: "Temperature Sensor", submitOnChange:false, width: 4
              }
              else if (trigger == "By Switch") {
-                 paragraph "Trigger MowBot Tamer Instance when the selected switch is ON:"
-                 input name: "triggerSwitch", type: "capability.switch", title: "Trigger Switch (on=activated, off=deactivated)", width: 12, multiple: false
+                 paragraph "Trigger MowBot Tamer Instance when the MowBot Tamer Device switch is ON:"
              }
              input name: "isDeactivated", type: "bool", title: "Manually Deactivate (Overrides Switch)?", defaultValue: false, width: 6
          }
@@ -106,32 +106,12 @@ def instancePage() {
             paragraph getInterface("note", "A Mowing Duration smaller than the duration of the Full Mowing Window will park the mower(s) once that duration of mowing has been reached, even if the Mowing Window has not expired yet.") 
             if (durationType == "Certain Duration") {
                  input name: "duration", type: "number", title: "Minutes to Mow", width: 4, required: true
-             }
-            input name: "addBackupWindow", type: "bool", title: getInterface("highlightedInput", "Add Backup Mowing Window?"), defaultValue: false, width: 12, submitOnChange: true
-            paragraph getInterface("note", "If the mower(s) are each unable to mow for the specified duration during a specific occurrence of the primary Mowing Window, the deficit can be made-up during a Backup Mowing Window specified here. The mower(s) will mow during a single occurrence of the Backup Window that occurs closest to the deficient primary Mowing Window.")
-             if (addBackupWindow == true) {
-                 input name: "backupStartTime", type: "enum", width: 4, title: "Backup Mowing Window Start Time", options: ["Sunrise", "Sunset", "Certain Time"], submitOnChange: true, required: true
-                 if (backupStartTime == "Certain Time") {
-                     input name: "backupStartTimeValue", type: "time", title: "Certain Start Time", width: 8, submitOnChange: true, required: true
-                 }
-                else if (backupStartTime == "Sunrise" || backupStartTime == "Sunset") {
-                    input name: "backupStartTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
-                }
-                 input name: "backupEndTime", type: "enum", title: "Backup Mowing Window End Time", options: ["Sunrise", "Sunset", "Certain Time"], submitOnChange: true, width: 4, required: true
-                 if (backupEndTime == "Certain Time") {
-                     input name: "backupEndTimeValue", type: "time", title: "Certain End Time", width: 8, submitOnChange: true
-                 }
-                else if (backupEndTime == "Sunrise" || backupEndTime == "Sunset") {
-                    input name: "backupEndTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
-                }                 
-             }
-
+             }        
          }
         
          section (getInterface("header", " Park Mower(s) When...")) {  
              paragraph getInterface("boldText", "Mower(s) will park (or remain parked) during times when ANY of the condition(s) selected below are met. If the Mowing Window is still open when ALL of the condition(s) are no longer met, the mower(s) will resume mowing.")
-             input name: "parkWhenGrassWet", type: "bool", title: getInterface("highlightedInput", "Grass is Wet?"), defaultValue: false, submitOnChange:true, width: addBackupWindow == true && parkWhenGrassWet == true ? 8 : 12
-             if (addBackupWindow == true && parkWhenGrassWet == true) input name: "disableParkWhenGrassWet", type: "bool", title: getInterface("highlightedInputRed", "Disable for Backup Window?"), defaultValue: false, submitOnChange:false, width: 4
+             input name: "parkWhenGrassWet", type: "bool", title: getInterface("highlightedInput", "Grass is Wet?"), defaultValue: false, submitOnChange:true, width: 12
              if (parkWhenGrassWet == true) {
                   input name: "leafWetnessSensor", type: "device.EcowittRFSensor", title: "Ecowitt Leaf Wetness Sensor(s)", width: leafWetnessSensor ? 4 : 12, submitOnChange: true, multiple: true
                  if (leafWetnessSensor) {
@@ -159,30 +139,27 @@ def instancePage() {
                   // TO DO: option to proactively park if rain is forecasted as imminent (requires pulling own hourly data from OWM - very often...)
               }
                     
-             input name: "parkWhenTempHot", type: "bool", title: getInterface("highlightedInput", "Temperature is Too Hot?"), defaultValue: false, submitOnChange:true, width: addBackupWindow == true && parkWhenTempHot == true ? 8 : 12
-             if (addBackupWindow == true && parkWhenTempHot == true) input name: "disableParkWhenTempHot", type: "bool", title: getInterface("highlightedInputRed", "Disable for Backup Window?"), defaultValue: false, submitOnChange:false, width: 4
+             input name: "parkWhenTempHot", type: "bool", title: getInterface("highlightedInput", "Temperature is Too Hot?"), defaultValue: false, submitOnChange:true, width: 12
              if (parkWhenTempHot == true) {
                  paragraph getInterface("note", "Mower(s) will park when the temperature meets or exceeds the temperature threshold.")
                  input name: "parkTempSensor", type: "capability.temperatureMeasurement", title: "Temperature Sensor", submitOnChange:false, width: 4, required: true
                  input name: "parkTempThreshold", type: "number", title: "Temperature Threshold", submitOnChange:false, width: 4, required: true
                  input name: "parkTempThresholdTimes", type: "number", title: "Required # Consecutive Readings Above/Below Threshold", width: 4, required: true
              }
-             input name: "parkWhenPresenceArrivesLeaves", type: "bool", title: getInterface("highlightedInput", "Presence Sensor Arrives/Leaves?"), defaultValue: false, submitOnChange:true, width: addBackupWindow == true && parkWhenPresenceArrivesLeaves == true ? 8 : 12
-             if (addBackupWindow == true && parkWhenPresenceArrivesLeaves == true) input name: "disableParkWhenPresenceArrivesLeaves", type: "bool", title: getInterface("highlightedInputRed", "Disable for Backup Window?"), defaultValue: false, submitOnChange:false, width: 4
+             input name: "parkWhenPresenceArrivesLeaves", type: "bool", title: getInterface("highlightedInput", "Presence Sensor Arrives/Leaves?"), defaultValue: false, submitOnChange:true, width: 12
              if (parkWhenPresenceArrivesLeaves == true) {
                  paragraph getInterface("note", "Mower(s) will park when ANY of the selected Presence Sensors are Present/Not Present.")
                  input name: "presenceSensors", type: "capability.presenceSensor", title: "Presence Sensor(s)", submitOnChange:false, width: 4, multiple: true, required: true
                  input name: "presencePresentAbsent", type: "enum", title: "Park When Sensor is.", options: ["Present", "Not Present"], width: 4, required: true
                 
              }
-             input name: "parkWhenSwitchOnOff", type: "bool", title: getInterface("highlightedInput", "Switch is On/Off?"), defaultValue: false, submitOnChange:true, width: addBackupWindow == true && parkWhenSwitchOnOff == true ? 8 : 12
-             if (addBackupWindow == true && parkWhenSwitchOnOff == true) input name: "disableParkWhenSwitchOnOff", type: "bool", title: getInterface("highlightedInputRed", "Disable for Backup Window?"), defaultValue: false, submitOnChange:false, width: 4
-                if (parkWhenSwitchOnOff) {
-                    input name: "parkSwitches", type: "capability.switch", title: "Switch(es)", submitOnChange:false, width: 4, multiple: true, required: true
-                    input name: "switchOnOff", type: "enum", title: "Park When Switch Is", options: ["on", "off"], width: 4, required: true
-                 }
+             input name: "parkWhenSwitchOnOff", type: "bool", title: getInterface("highlightedInput", "Switch is On/Off?"), defaultValue: false, submitOnChange:true, width: 12
+             if (parkWhenSwitchOnOff) {
+                input name: "parkSwitches", type: "capability.switch", title: "Switch(es)", submitOnChange:false, width: 4, multiple: true, required: true
+                 input name: "switchOnOff", type: "enum", title: "Park When Switch Is", options: ["on", "off"], width: 4, required: true
              }
-             section (getInterface("header", " Pause Mower(s) When...")) {  
+         }
+         section (getInterface("header", " Pause Mower(s) When...")) {  
                 paragraph getInterface("boldText", "Mower(s) will temporarily pause in place when ANY of the condition(s) below are met, and resume mowing when ALL of the condition(s) are no longer met.")
                 input name: "pauseWhenMotion", type: "bool", title: getInterface("highlightedInput", "Motion is Detected?"), defaultValue: false, submitOnChange:true
                 if (pauseWhenMotion == true) {
@@ -211,7 +188,47 @@ def instancePage() {
                     input name: "buttonNumber", type: "number", title: "Button Number", width: 4, required: true
                     input name: "buttonPauseDuration", type: "number", title: "Pause Duration (Seconds) on Button Press", submitOnChange:false, width: 4, required: true
                  }
-            }             
+            }   
+        
+            def sensorOptions = []
+            if (parkWhenGrassWet == true) {
+                if (leafWetnessSensor) sensorOptions.add("Wet Grass: Leaf Wetness Sensor")
+                if (humidityMeasurement) sensorOptions.add("Wet Grass: Humidity or Soil Moisture Sensor")
+                if (waterSensor) sensorOptions.add("Wet Grass: Water Sensor")
+                if (irrigationValves) sensorOptions.add("Wet Grass: Irrigation")
+                if (openWeatherDevice) sensorOptions.add("Wet Grass: Open Weather Device")
+            }
+            if (parkWhenTempHot == true && parkTempSensor) sensorOptions.add("Temperature Sensor")
+            if (parkWhenPresenceArrivesLeaves == true && presenceSensors) sensorOptions.add("Presence Sensor")
+            if (parkWhenSwitchOnOff && parkSwitches) sensorOptions.add("Switch(es)")
+        
+            section (getInterface("header", " Backup Window")) { 
+                input name: "addBackupWindow", type: "bool", title: getInterface("highlightedInput", "Add Backup Mowing Window?"), defaultValue: false, width: 12, submitOnChange: true
+                paragraph getInterface("note", "If the mower(s) are each unable to mow for the specified duration during a specific occurrence of the primary Mowing Window, the deficit can be made-up during a Backup Mowing Window specified here. The mower(s) will mow during a single occurrence of the Backup Window that occurs closest to the deficient primary Mowing Window.")
+                if (addBackupWindow == true) {
+                    input name: "backupStartTime", type: "enum", width: 4, title: "Backup Mowing Window Start Time", options: ["Sunrise", "Sunset", "Certain Time"], submitOnChange: true, required: true
+                    if (backupStartTime == "Certain Time") {
+                        input name: "backupStartTimeValue", type: "time", title: "Certain Start Time", width: 8, submitOnChange: true, required: true
+                    }
+                    else if (backupStartTime == "Sunrise" || backupStartTime == "Sunset") {
+                        input name: "backupStartTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
+                    }
+                     input name: "backupEndTime", type: "enum", title: "Backup Mowing Window End Time", options: ["Sunrise", "Sunset", "Certain Time"], submitOnChange: true, width: 4, required: true
+                     if (backupEndTime == "Certain Time") {
+                         input name: "backupEndTimeValue", type: "time", title: "Certain End Time", width: 8, submitOnChange: true
+                     }
+                    else if (backupEndTime == "Sunrise" || backupEndTime == "Sunset") {
+                        input name: "backupEndTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
+                    }                 
+                 }
+
+                input name: "backupParkConditionsIgnored", type: "enum", width: 12, multiple: true, title: "Park Conditions to Ignore for Backup Window", options: sensorOptions, submitOnChange: true, required: true
+            }
+            section (getInterface("header", " Forced Mowing Options")) { 
+                paragraph getInterface("note", " Specify options for how to handle mowing that is forced via the native mower app or the Hubitat mower device")  
+                input name: "forcedMowingParkConditionsEnforced", type: "enum", width: 12, multiple: true, title: "Park conditions to enforce even when mowing forced", options: sensorOptions, submitOnChange: true, required: true
+                paragraph getInterface("note", " By default, all park conditions will be ignored when mowing is forced. Specify exceptions here, to enforce select park conditions even when mowing is forced. For example, still park the mower upon rain, even if mowing has been forced.") 
+            }
             section (getInterface("header", " Dynamic Cutting Height")) {  
                 paragraph getInterface("note", " Adjust cutting height dynamically depending on how long it's been since the mower(s) have been able to mow.")             
                input name: "dynamicCuttingHeight", type: "bool", title: "Dynamic Cutting Height?", width: 12, submitOnChange: true
@@ -234,8 +251,6 @@ def instancePage() {
     }
 }
 
-// TO DO: force mow and force park switches
-
 def footer() {
     paragraph getInterface("line", "") + '<div style="display: block;margin-left: auto;margin-right: auto;text-align:center">&copy; 2022 Justin Leonard.<br>'
 }
@@ -254,7 +269,6 @@ def updated() {
 }
 
 def selectiveUnschedule(unscheduleActivation = false) {
-    state.selectiveUnscheduleCalled = "selectiveUnschedule called at ${now()} with unscheduleActivation = ${unscheduleActivation}"
     logDebug("selectiveUnschedule called at ${now()}")
     if (unscheduleActivation) {
         unschedule(tempTriggerCheck)
@@ -276,10 +290,13 @@ def selectiveUnschedule(unscheduleActivation = false) {
 
 def uninstalled() {
 	logDebug "Uninstalled app"
+    deleteCompanionDevice()
 }
 
 def initialize() {
     logDebug("Initializing ${app.label}")
+    
+    createCompanionDevice()
 
     if (!state.currentWindow) state.currentWindow = [:]  // currentWindow is the mowing window that is currently in progress, if any
     if (!state.todaysWindow) state.todaysWindow = [:]    // todaysWindow is the mwoing window that starts today, if any. It starts today, but may span into tomorrow.
@@ -304,10 +321,8 @@ def initialize() {
             schedule("01 00 00 ? ? *", tempTriggerCheck)
             tempTriggerCheck()
         }
-        else if (trigger == "By Switch" && triggerSwitch != null) {
-            state.activationSwitch = triggerSwitch.currentValue("switch")
-            subscribe(triggerSwitch, "switch", switchHandler)
-            switchTriggerCheck()
+        else if (trigger == "By Switch") {
+            // nothing to do
         }
         else if (trigger == "By Date") {
             logDebug("Checking Trigger By Date in ${app.label}")
@@ -322,8 +337,27 @@ def initialize() {
     updateActivationStatus()   
 }
 
+def createCompanionDevice()
+{
+    def child = getChildDevice("MowBotTamerDevice${app.id}")
+    if (child == null) {
+        String childNetworkID = "MowBotTamerDevice${app.id}"
+        child = addChildDevice("lnjustin", "MowBot Tamer Device", childNetworkID, [label:"MowBot Tamer Device ${app.label}", isComponent:true, name:"MowBot Tamer Device"])
+    }
+}
+
+def deleteCompanionDevice()
+{
+    deleteChildDevice("MowBotTamerDevice${app.id}")
+}
+
+def updateDeviceData(data) {
+    def child = getChildDevice("MowBotTamerDevice${app.id}")  
+    if (child) child.updateData(data)
+}
+
 def updateActivationStatus() {
-    logDebug("updateActivationStatus called at ${now}")
+    logDebug("updateActivationStatus called at ${now()}")
     if (state.activated == true) activate() 
     else if (state.activated == false) deactivate()
 }
@@ -381,8 +415,9 @@ def getAverageOfList(list) {
     return avg
 }
 
-def switchHandler(evt) {
-    state.activationSwitch = evt.value
+def switchHandler(value) {
+    logDebug("Switch Handler executing with value ${value}")
+    state.activationSwitch = value
     switchTriggerCheck()
 }
 
@@ -431,7 +466,6 @@ def deactivate() {
 }
 
 def activate() {
-    state.activateCalledAt = "activate called at ${now()}"
     subscribe(settings["husqvarnaMowers"], "mowerActivity", mowerActivityHandler)
     
     def notifications = parent.getNotificationTypes()
@@ -489,26 +523,36 @@ def activate() {
                 }
             }
         } 
-
+        scheduleMowingWindowEnd()
     }
     else endMowingWindow()
 }
 
-def subscribeForParkPause() {
-    if (settings["parkWhenGrassWet"] == true) {
-        if (settings["leafWetnessSensor"] != null) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
-        if (settings["humidityMeasurement"] != null) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
-        if (settings["waterSensor"] != null) subscribe(settings["waterSensor"], "water", waterSensorHandler)
+def subscribeForParkPause(forcedMowing = false) {
+    if (!forcedMowing) {
+        if (settings["parkWhenGrassWet"] == true) {
+            if (settings["leafWetnessSensor"] != null) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
+            if (settings["humidityMeasurement"] != null) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
+            if (settings["waterSensor"] != null) subscribe(settings["waterSensor"], "water", waterSensorHandler)
+        }
+        if (settings["parkWhenTempHot"] == true && settings["parkTempSensor"] != null) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
+        if (settings["parkWhenPresenceArrivesLeaves"] == true && settings["presenceSensors"] != null) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
+        if (settings["parkWhenSwitchOnOff"] == true && settings["parkSwitches"] != null) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)  
     }
-    if (settings["parkWhenTempHot"] == true && settings["parkTempSensor"] != null) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
-    if (settings["parkWhenPresenceArrivesLeaves"] == true && settings["presenceSensors"] != null) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
-    if (settings["parkWhenSwitchOnOff"] == true && settings["parkSwitches"] != null) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)
+    else {
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness)) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity)) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Water Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.water)) subscribe(settings["waterSensor"], "water", waterSensorHandler)
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature)) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence)) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors)) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)      
+    }
     
     if (settings["pauseWhenMotion"] == true && settings["pause_motionSensors"] != null) subscribe(settings["pause_motionSensors"], "motion", pauseOnMotionHandler)
     if (settings["pauseWhenOpenCloseSensor"] == true && settings["pauseContactSensors"] != null) subscribe(settings["pauseContactSensors"], "contact", pauseOnOpenCloseHandler)
     if (settings["pauseWhenPresenceArrivesLeaves"] == true && settings["pause_presenceSensors"] != null) subscribe(settings["pause_presenceSensors"], "presence", pauseOnPresenceHandler)
     if (settings["pauseWhenSwitchOnOff"] == true && settings["pauseSwitches"] != null) subscribe(settings["pauseSwitches"], "switch", pauseOnSwitchHandler)
-    if (settings["pauseWhenButtonPressed"] == true && settings["pauseButtons"] != null) subscribe(settings["pauseButtons"], "pushed", pauseOnButtonHandler)       
+    if (settings["pauseWhenButtonPressed"] == true && settings["pauseButtons"] != null) subscribe(settings["pauseButtons"], "pushed", pauseOnButtonHandler)    
 }
 
 def unsubscribeForParkPause() {
@@ -871,6 +915,8 @@ def activateBackupWindow(duration) {
     def postWindowTime = adjustDateBySecs(backupEnd, windowExtension) // schedule postcheck after mowing end time, corresponding to polling interval, plus 120 seconds, to make sure mower activity updated              
     runOnce(postWindowTime, handleExpiredBackupMowingWindow)  
     runOnce(backupEnd, endBackupWindow)  
+    
+    updateDeviceData([backupTriggered: state.backup.isPending, backupDuration: msToMins(state.backup.duration)])
 }
 
 def backupWindowPreCheck() {
@@ -944,12 +990,40 @@ def parseDaysOfWeek(rightShift = false) {
     return dayMapBool
 }
 
+def forceMowing(serial) {
+    state.mowers[serial]?.userForcingMowing = true
+    state.mowers[serial]?.parkedByApp = false
+    state.mowers[serial]?.pausedByApp = false    
+    
+    updateAllParkConditions()
+    state.forcedMowingParkConditionSnapshot = state.parkConditions // TO DO: ignore any conditions that were already met when the user forced mowing, since user obviously doesn't want to enforce these
+    
+    subscribeForParkPause(true)
+}
+
+def stopForcedMowing(serial) {
+    state.mowers[serial]?.userForcingMowing = false
+    state.forcedMowingParkConditionSnapshot = null
+    if (anyMowerForcingMowing() == false && isMowingScheduledForNow() == false && isBackupMowingScheduledForNow() == false) unsubscribeForParkPause()
+    // unsubscribe if outside mowing window and no other mowers being forced to mow
+}
+
+def anyMowerForcingMowing() {
+    def anyBeingForced = false
+    state.mowers.each { serialNum, mower ->  
+        if (state.mowers[serialNum]?.userForcingMowing == true) anyBeingForced = true
+    }
+    return anyBeingForced
+}
+
 def mowerActivityHandler(evt) {
     // control mowing based on reported mower activity, rather than based on commands that this app sends, in order to account for any mowing events triggered by the user via the native mowing app (not this app)
     def mower = evt.getDevice()
     def serial = mower.currentValue("serialNumber")
     def activityTime = evt.getDate().getTime()
     def activity = evt.value        
+    
+    def now = new Date(now())
     
     state.mowers[serial]?.previous.activity = state.mowers[serial]?.current.activity
     state.mowers[serial]?.current.activity = activity
@@ -970,21 +1044,20 @@ def mowerActivityHandler(evt) {
         def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
         def stopByDurationDate = new Date(stopByDuration)
         def windowEnd = getNextMowingWindowEnd()
-        if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now())) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
+        if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
         
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
             // deduce user forced mowing, since mowing started even though this app forced parking
-            state.mowers[serial]?.userForcingMowing = true
-            state.mowers[serial]?.parkedByApp = false
-            state.mowers[serial]?.pausedByApp = false
+            forceMowing(serial)
+
         }
     }
     else if (isMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" ||state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
         state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
+        stopForcedMowing(serial)
         
-        state.mowers[serial]?.userForcingMowing = false
     }
     else if (isBackupMowingScheduledForNow() && (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING")) {
         logDebug("isBackupMowingScheduledForNow() without cushion is true. Mower started mowing.")
@@ -1000,28 +1073,23 @@ def mowerActivityHandler(evt) {
         def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
         def stopByDurationDate = new Date(stopByDuration)
         def windowEnd = new Date(state.backup.window.end)
-        if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now())) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
+        if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
         
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
             // deduce user forced mowing, since mowing started even though this app forced parking
-            state.mowers[serial]?.userForcingMowing = true
-            state.mowers[serial]?.parkedByApp = false
-            state.mowers[serial]?.pausedByApp = false
+            forceMowing(serial)
         }
     }
     else if (isBackupMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isBackupMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
         state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
-        
-        state.mowers[serial]?.userForcingMowing = false
+        stopForcedMowing(serial)
     }
     else if (state.mowers[serial]?.current.activity == "MOWING") {
         logDebug("Mower started mowing outside of any window")
         // mowing started outside of any mowing window. Assume user forced mowing and wants to keep mowing irrespective of parking/pausing conditions. 
-        state.mowers[serial]?.userForcingMowing = true
-        state.mowers[serial]?.parkedByApp = false
-        state.mowers[serial]?.pausedByApp = false
+        forceMowing(serial)
     }
     else {
         // TO DO: anything else here?    
@@ -1110,6 +1178,8 @@ def handleExpiredBackupMowingWindow() {
     }
     
     unsubscribeForParkPause()
+    
+    updateDeviceData([backupTriggered: false, backupDuration: "none"])
 }
 
 def getMinPercentWindowSetting() {
@@ -1340,21 +1410,30 @@ def pauseOne(serial) {
 
 def isAnyParkConditionMet(backupPrecheck = false) {
     def isMet = false
-    if (isBackupMowingScheduledForNow() || backupPrecheck == true) {
+    if (anyMowerForcingMowing()) {
+        logDebug("Checking if any park conditions are met for forced mowing")
+
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness) && state.parkConditions.leafWetness == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity) && state.parkConditions.humidity == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Water Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.water) && state.parkConditions.water == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Irrigation") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.valve) && state.parkConditions.valve == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Open Weather Device") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.weather) && state.parkConditions.weather == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature) && state.parkConditions.temperature == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence) && state.parkConditions.presence  == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors) && state.parkConditions.switchSensors  == true) isMet = true        
+    }
+    else if (isBackupMowingScheduledForNow() || backupPrecheck == true) {
         // check parking conditions accounting for any that are disabled for the backup window
         logDebug("Checking if any park conditions are met for backup window")
-        if (!settings["disableParkWhenGrassWet"]) {
-            if (state.parkConditions.leafWetness == true || state.parkConditions.water == true || state.parkConditions.valve == true || state.parkConditions.weather == true || state.parkConditions.humidity == true) isMet = true
-        }
-        if (!settings["disableParkWhenTempHot"]) {
-            if (state.parkConditions.temperature == true) isMet = true
-        }
-        if (!settings["disableParkWhenPresenceArrivesLeaves"]) {
-            if (state.parkConditions.presence == true) isMet = true
-        }
-        if (!settings["disableParkWhenSwitchOnOff"]) {
-            if (state.parkConditions.switchSensors == true) isMet = true
-        }
+
+        if (!settings["backupParkConditionsIgnored"].contains("Wet Grass: Leaf Wetness Sensor") && state.parkConditions.leafWetness == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && state.parkConditions.humidity == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Wet Grass: Water Sensor") && state.parkConditions.water == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Wet Grass: Irrigation") && state.parkConditions.valve == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Wet Grass: Open Weather Device") && state.parkConditions.weather == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Temperature Sensor") && state.parkConditions.temperature == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Presence Sensor") && state.parkConditions.presence  == true) isMet = true
+        if (!settings["backupParkConditionsIgnored"].contains("Switch(es)") && state.parkConditions.switchSensors  == true) isMet = true
     }
     else {
         logDebug("Checking if any park conditions are met for primary window")
@@ -1367,17 +1446,13 @@ def isAnyParkConditionMet(backupPrecheck = false) {
 }
 
 def handleParkConditionChange() {
-   // logDebug("isMowingScheduledForNow(): ${isMowingScheduledForNow()}")
-    if (isMowingScheduledForNow() || isBackupMowingScheduledForNow()) {
+    if (isMowingScheduledForNow() || isBackupMowingScheduledForNow() || anyMowerForcingMowing()) {
         if (isAnyParkConditionMet()) {
             logDebug("Park Conditions Met")
             for (mower in settings["husqvarnaMowers"]) { 
                 def serialNum = mower.currentValue("serialNumber")
-                if (state.mowers[serialNum]?.userForcingMowing == false) {
-                    logDebug("Commanding mower to park")
-                    parkOne(serialNum) // park mower if park conditions become met during a scheduled mowing window, except if the user has forced mowing to override the schedule
-                }
-                else logDebug("Park Conditions Met, but user has forced mowing.")
+                logDebug("Commanding mower to park")
+                parkOne(serialNum) // park mower if park conditions become met during a scheduled mowing window, except if the user has forced mowing to override the schedule
             } 
         }
         else {
@@ -1389,6 +1464,8 @@ def handleParkConditionChange() {
             }
         }
     }
+    
+    updateDeviceData([parkFromLeafWetness: state.parkConditions.leafWetness, parkFromWeather: state.parkConditions.weather, parkFromTemp: state.parkConditions.temperature, parkFromHumidity: state.parkConditions.humidity, parkFromValve: state.parkConditions.valve, parkFromPreence: state.parkConditions.presence, parkFromWaterSensor: state.parkConditions.water, parkFromSwitch: state.parkConditions.switchSensors])
 }
 
 def temperatureHandler(evt) {
@@ -1488,7 +1565,9 @@ def updateAllParkConditions() {
         state.parkConditions.valve = false
     }
     else if (settings["openWeatherDevice"] == null) state.parkConditions.weather = false
-    else if (settings["irrigationValves"] == null) state.parkConditions.valve = null
+    else if (settings["irrigationValves"] == null) state.parkConditions.valve = null 
+        
+    updateDeviceData([parkFromLeafWetness: state.parkConditions.leafWetness, parkFromWeather: state.parkConditions.weather, parkFromTemp: state.parkConditions.temperature, parkFromHumidity: state.parkConditions.humidity, parkFromValve: state.parkConditions.valve, parkFromPreence: state.parkConditions.presence, parkFromWaterSensor: state.parkConditions.water, parkFromSwitch: state.parkConditions.switchSensors])
 }
 
 def parkOnPresenceHandler(evt) { 
@@ -1553,10 +1632,12 @@ def openWeatherHandler(evt) {
     if (weather == "thunderstorm" || weather == "drizzle" || weather == "rain" || weather == "thunderstorm" || weather == "snow") {
         state.parkConditions.weather = true
         unschedule(delayedWeather)
+        updateDeviceData([parkFromWeatherExpires: "none"])
         handleParkConditionChange()
     }
     else if (state.parkConditions?.weather == null) {
         state.parkConditions.weather = false
+        updateDeviceData([parkFromWeatherExpires: "none"])
         handleParkConditionChange()
     }
     else if (state.parkConditions?.weather != null && state.parkConditions.weather == true) {
@@ -1569,6 +1650,7 @@ def openWeatherHandler(evt) {
                 if (delayedTime.after(dayTime.sunrise) && dayTime.sunset.after(delayedTime)) {
                     // full delay in the daytime, so just schedule for delayedTime
                     runOnce(delayedTime, delayedWeather)
+                    updateDeviceData([parkFromWeatherExpires: delayedTime.format("h:mm a")])
                 }
                 else if (delayedTime.after(dayTime.sunrise) && !dayTime.sunset.after(delayedTime)) {
                     // sun sets before delay ends
@@ -1577,7 +1659,8 @@ def openWeatherHandler(evt) {
                     Integer delayRemainderMins = Math.round(delayRemainder/60)
                     def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: delayRemainderMins])
                     def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
-                    runOnce(offsetSunriseTomorrow, delayedWeather)                    
+                    runOnce(offsetSunriseTomorrow, delayedWeather) 
+                    updateDeviceData([parkFromWeatherExpires: offsetSunriseTomorrow.format("h:mm a")])
                 }
             }
             else if (now.after(dayTime.sunrise) && !dayTime.sunset.after(now)) {
@@ -1585,11 +1668,13 @@ def openWeatherHandler(evt) {
                 def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: settings["weatherWetDuration"]])
                 def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
                 runOnce(offsetSunriseTomorrow, delayedWeather)
+                updateDeviceData([parkFromWeatherExpires: offsetSunriseTomorrow.format("h:mm a")])
             }
             else if (!now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 // before sunrise, so full delay will be after sunrise today
                 def offsetSunrise = getSunriseAndSunset([sunriseOffset: settings["weatherWetDuration"]])
                 runOnce(offsetSunrise.sunrise, delayedWeather)
+                updateDeviceData([parkFromWeatherExpires: offsetSunrise.sunrise.format("h:mm a")])
             }
         }        
     }
@@ -1599,6 +1684,7 @@ def delayedWeather() {
     def weather = settings["openWeatherDevice"]?.currentValue("condition_code")
     if (weather != "thunderstorm" && weather != "drizzle" && weather != "rain" && weather != "thunderstorm" && weather != "snow") {
         state.parkConditions.weather = false
+        updateDeviceData([parkFromWeatherExpires: "none"])
         handleParkConditionChange()   
     }
 }
@@ -1665,10 +1751,12 @@ def irrigationValveHandler(evt) {
     if (anyOpen == true) {
         state.parkConditions.valve = true
         unschedule(delayedIrrigationValveClosed)
+        updateDeviceData([parkFromWeatherExpires: "none"])
         handleParkConditionChange()
     }
     else if (anyOpen == false && state.parkConditions?.valve == null) {
         state.parkConditions.valve = false
+        updateDeviceData([parkFromWeatherExpires: "none"])
         handleParkConditionChange()
     }
     else if (anyOpen == false && state.parkConditions?.valve != null && state.parkConditions.valve == true) {
@@ -1683,6 +1771,7 @@ def irrigationValveHandler(evt) {
                 if (delayedTime.after(dayTime.sunrise) && dayTime.sunset.after(delayedTime)) {
                     // full delay in the daytime, so just schedule for delayedTime
                     runOnce(delayedTime, delayedIrrigationValveClosed)
+                    updateDeviceData([parkFromValveExpires: delayedTime.format("h:mm a")])
                 }
                 else if (delayedTime.after(dayTime.sunrise) && !dayTime.sunset.after(delayedTime)) {
                     // sun sets before delay ends
@@ -1691,7 +1780,8 @@ def irrigationValveHandler(evt) {
                     Integer delayRemainderMins = Math.round(delayRemainder/60)
                     def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: delayRemainderMins])
                     def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
-                    runOnce(offsetSunriseTomorrow, delayedIrrigationValveClosed)                    
+                    runOnce(offsetSunriseTomorrow, delayedIrrigationValveClosed)  
+                    updateDeviceData([parkFromValveExpires: offsetSunriseTomorrow.format("h:mm a")])
                 }
             }
             else if (now.after(dayTime.sunrise) && !dayTime.sunset.after(now)) {
@@ -1699,11 +1789,13 @@ def irrigationValveHandler(evt) {
                 def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: wetDuration])
                 def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
                 runOnce(offsetSunriseTomorrow, delayedIrrigationValveClosed)
+                updateDeviceData([parkFromValveExpires: offsetSunriseTomorrow.format("h:mm a")])
             }
             else if (!now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 // before sunrise, so full delay will be after sunrise today
                 def offsetSunrise = getSunriseAndSunset([sunriseOffset: wetDuration])
                 runOnce(offsetSunrise.sunrise, delayedIrrigationValveClosed)
+                updateDeviceData([parkFromValveExpires: offsetSunrise.sunrise.format("h:mm a")])
             }
         }
     }
@@ -1738,6 +1830,8 @@ def handlePauseConditionChange() {
            if (state.mowers[serialNum].pausedByApp == true) mowOne(serialNum) // call mowOne if no pause conditions met anymore, will resume schedule (if mowing window already over, resuming schedule will park mower anyway)
         }
     }
+    
+    updateDeviceData([pauseFromButton: state.pauseConditions.button, pauseFromMotion: state.pauseCondtions.motion, pauseFromContact: state.pauseConditions.contact, pauseFromPresence: state.pauseConditions.presence, pauseFromSwitch: state.pauseConditions.switchSensors])
 }
 
 def updateAllPauseConditions() {
@@ -1761,6 +1855,8 @@ def updateAllPauseConditions() {
         state.pauseConditions.switchSensors = anyMet
     }
     else state.pauseConditions.switchSensors = false
+    
+    updateDeviceData([pauseFromButton: state.pauseConditions.button, pauseFromMotion: state.pauseConditions.motion, pauseFromContact: state.pauseConditions.contact, pauseFromPresence: state.pauseConditions.presence, pauseFromSwitch: state.pauseConditions.switchSensors])
 }
 
 def pauseOnMotionHandler(evt) {
