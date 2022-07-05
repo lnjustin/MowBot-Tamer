@@ -17,6 +17,7 @@
  *  v0.0.2 - Bug fixes
  *  v0.0.3 - Delayed handling of window expiration more; More efficient handling of mowing windows
  *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
+ *  v0.0.5 - Bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -296,6 +297,7 @@ def uninstalled() {
 def initialize() {
     logDebug("Initializing ${app.label}")
     
+    deleteChildDevices()
     createCompanionDevice()
 
     if (!state.currentWindow) state.currentWindow = [:]  // currentWindow is the mowing window that is currently in progress, if any
@@ -659,7 +661,7 @@ def setNextBackupMowingWindow() {
     else if (backupStartTime == "Sunset") todaysBackup =  getSunriseAndSunset([sunsetOffset: backupStartTimeOffset ? backupStartTimeOffset : 0]).sunset
         
     def backupEndAt = null
-    if (backupEndTime == "Certain Time" && backupEndTimeValue != null) backupEdAt = toDateTime(backupEndTimeValue)
+    if (backupEndTime == "Certain Time" && backupEndTimeValue != null) backupEndAt = toDateTime(backupEndTimeValue)
     else if (backupEndTime == "Sunrise") backupEndAt = getSunriseAndSunset([sunriseOffset: backupEndTimeOffset ? backupEndTimeOffset : 0]).sunrise
     else if (backupEndTime == "Sunset") backupEndAt = getSunriseAndSunset([sunsetOffset: backupEndTimeOffset ? backupEndTimeOffset : 0]).sunset
     if (backupEndAt && todaysBackup.after(backupEndAt)) backupEndAt = backupEndAt + 1  // end mowing tomorrow. Tomorrow's sunrise and sunset closely approximated based on today's sunrise and sunset
@@ -1471,45 +1473,35 @@ def handleParkConditionChange() {
 def temperatureHandler(evt) {
     def sensorId = evt.getDeviceId().toString()
     def temp = evt.value.toFloat()
+    updateDeviceData([temperature: temp])
     if (state.temp == null) state.temp = [:]
-    if (state.temp[sensorId] == null) state.temp[sensorId] = [:] 
     if (temp >= settings["parkTempThreshold"]) {
-        if (state.temp[sensorId].numAbove == null) {
-           state.temp[sensorId].numAbove = 1
+        if (state.temp.numAbove == null) {
+           state.temp.numAbove = 1
         }
-        else state.temp[sensorId].numAbove++
-        state.temp[sensorId].numBelow = 0    
+        else state.temp.numAbove++
+        state.temp.numBelow = 0    
     }
     else {
-        if (state.temp[sensorId].numBelow  == null) state.temp[sensorId].numBelow  = 1
-        else state.temp[sensorId].numBelow ++
-        state.temp[sensorId].numAbove = 0  
+        if (state.temp.numBelow  == null) state.temp.numBelow  = 1
+        else state.temp.numBelow ++
+        state.temp.numAbove = 0  
     }
     
-    if (state.temp[sensorId].numAbove != null && state.temp[sensorId].numAbove >= settings["parkTempThresholdTimes"]) {
-        state.temp[sensorId]["tooHot"] = true
-        handleTempChange()
+    if (state.temp.numAbove != null && state.temp.numAbove >= settings["parkTempThresholdTimes"]) {
+        state.parkConditions.temperature = true
+        handleParkConditionChange()
     }
-    else if (state.temp[sensorId].numBelow  != null && state.temp[sensorId].numBelow  >= settings["parkTempThresholdTimes"]) {
-        state.temp[sensorId]["tooHot"] = false
-        handleTempChange()
+    else if (state.temp.numBelow  != null && state.temp.numBelow  >= settings["parkTempThresholdTimes"]) {
+        state.parkConditions.temperature = false
+        handleParkConditionChange()
     }
-}
-
-def handleTempChange() {
-    def anyMet = false
-    state.temp.each { deviceId, sensor ->
-        if (sensor["tooHot"] != null && sensor["tooHot"] == true) {
-            anyMet = true
-        }
-    }   
-    state.parkConditions.temperature = anyMet
-    handleParkConditionChange()
 }
 
 def updateAllParkConditions() {
     if (settings["parkWhenTempHot"] && settings["parkTempSensor"] && settings["parkTempThreshold"]) {
         def temp = settings["parkTempSensor"].currentValue("temperature")
+        updateDeviceData([temperature: temp])
         if (temp >= settings["parkTempThreshold"]) state.parkConditions.temperature = true
         else state.parkConditions.temperature = false
     }   
@@ -1534,6 +1526,7 @@ def updateAllParkConditions() {
         def anyMet = false
         for (sensor in settings["leafWetnessSensor"]) {
             def leafWetness = sensor.currentValue("leafWetness")
+            updateDeviceData([leafWetness: leafWetness])
             if (leafWetness >= settings["leafWetnessThreshold"]) anyMet = true
         }
         state.parkConditions.leafWetness = anyMet
@@ -1591,6 +1584,7 @@ def parkOnSwitchHandler(evt) {
 def leafWetnessHandler(evt) {
     def sensorId = evt.getDeviceId().toString()
     def leafWetness = evt.value.toInteger()
+    updateDeviceData([leafWetness: leafWetness])
     if (state.leafWetness == null) state.leafWetness = [:]
     if (state.leafWetness[sensorId] == null) state.leafWetness[sensorId] = [:] 
     if (leafWetness >= settings["leafWetnessThreshold"]) {
@@ -1629,6 +1623,7 @@ def handleLeafWetnessChange() {
 
 def openWeatherHandler(evt) {
     def weather = evt.value  
+    updateDeviceData([weather: weather])
     if (weather == "thunderstorm" || weather == "drizzle" || weather == "rain" || weather == "thunderstorm" || weather == "snow") {
         state.parkConditions.weather = true
         unschedule(delayedWeather)
@@ -1804,6 +1799,7 @@ def irrigationValveHandler(evt) {
 
 def delayedIrrigationValveClosed() {
     state.parkConditions.valve = false
+    updateDeviceData([parkFromValveExpires: "none"])
     handleParkConditionChange()
 }
 
