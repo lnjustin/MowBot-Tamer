@@ -13,7 +13,12 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  *  Change History:
- *  v0.0.4 - beta
+ *  v0.0.1 - Beta
+ *  v0.0.2 - Bug fixes
+ *  v0.0.3 - Delayed handling of window expiration more; More efficient handling of mowing windows
+ *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
+ *  v0.0.5 - Bug fixes
+ *  v0.0.6 - Added delay for water sensor; Bug fixes
 **/
 
 metadata
@@ -22,6 +27,16 @@ metadata
     {
         capability "Switch"
         
+        attribute "isInMowingWindow", "boolean"
+        attribute "windowEnd", "string"
+        
+        attribute "lastStartedMowing", "string"
+        attribute "lastStoppedMowing", "string"
+        attribute "nextStartTime", "string"
+        
+        attribute "minsMowedToday", "number" 
+        attribute "minsMowedTodayString", "string" 
+        
         attribute "backupTriggered", "boolean" 
         attribute "backupDuration", "number" 
  
@@ -29,14 +44,9 @@ metadata
         attribute "forcingPause", "boolean" 
         attribute "forcingMowing", "boolean" 
         
-        attribute "leafWetness", "number"
-        attribute "weather", "string"
-        attribute "temperature", "number"
-        attribute "humidity", "number"
-        attribute "valve", "string"
-        attribute "parkPresence", "string"
-        attribute "water", "string"
-        attribute "parkSwitch", "string"        
+        attribute "leafWetnessStatus", "enum", ["Transitioning Below", "Transitioning Above", "Above", "Below"]
+        attribute "temperatureStatus", "enum", ["Transitioning Below", "Transitioning Above", "Above", "Below"]
+        attribute "humidityStatus", "enum", ["Transitioning Below", "Transitioning Above", "Above", "Below"]     
         
         attribute "parkFromLeafWetness", "boolean"
         attribute "parkFromWeather", "boolean"
@@ -47,6 +57,7 @@ metadata
         attribute "parkFromValveExpires", "string"
         attribute "parkFromPresence", "boolean"
         attribute "parkFromWaterSensor", "boolean"
+        attribute "parkFromWaterSensorExpires", "string"
         attribute "parkFromSwitch", "boolean"
         
         attribute "motion", "string"
