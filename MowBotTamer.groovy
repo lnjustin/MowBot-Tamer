@@ -15,6 +15,10 @@
  *  Change History:
  *  v0.0.1 - Beta
  *  v0.0.2 - Bug fixes
+ *  v0.0.3 - Delayed handling of window expiration more; More efficient handling of mowing windows
+ *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
+ *  v0.0.5 - Bug fixes
+ *  v0.0.6 - Added delay for water sensor; Bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
