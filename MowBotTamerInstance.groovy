@@ -18,6 +18,7 @@
  *  v0.0.3 - Delayed handling of window expiration more; More efficient handling of mowing windows
  *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
  *  v0.0.5 - Bug fixes
+ *  v0.0.6 - Added delay for water sensor; Bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -114,17 +115,21 @@ def instancePage() {
              paragraph getInterface("boldText", "Mower(s) will park (or remain parked) during times when ANY of the condition(s) selected below are met. If the Mowing Window is still open when ALL of the condition(s) are no longer met, the mower(s) will resume mowing.")
              input name: "parkWhenGrassWet", type: "bool", title: getInterface("highlightedInput", "Grass is Wet?"), defaultValue: false, submitOnChange:true, width: 12
              if (parkWhenGrassWet == true) {
-                  input name: "leafWetnessSensor", type: "device.EcowittRFSensor", title: "Ecowitt Leaf Wetness Sensor(s)", width: leafWetnessSensor ? 4 : 12, submitOnChange: true, multiple: true
+                  input name: "leafWetnessSensor", type: "device.EcowittRFSensor", title: "Ecowitt Leaf Wetness Sensor(s)", width: leafWetnessSensor ? 4 : 12, submitOnChange: true
                  if (leafWetnessSensor) {
                      input name: "leafWetnessThreshold", type: "number", title: "Threshold Value", width: 4, required: true
                      input name: "leafWetnessThresholdTimes", type: "number", title: "Required # Consecutive Readings Above/Below Threshold", width: 4, required: true
                  }
-                  input name: "humidityMeasurement", type: "capability.relativeHumidityMeasurement", title: "Humidity or Soil Moisture Sensor(s)", width: humidityMeasurement ? 4 : 12, submitOnChange: true, multiple: true
+                  input name: "humidityMeasurement", type: "capability.relativeHumidityMeasurement", title: "Humidity or Soil Moisture Sensor(s)", width: humidityMeasurement ? 4 : 12, submitOnChange: true
                   if (humidityMeasurement) {
                      input name: "humidityThreshold", type: "number", title: "Threshold Value", width: 4, required: true
                      input name: "humidityThresholdTimes", type: "number", title: "Required # Consecutive Readings Above/Below Threshold", width: 4, required: true
                   }
-                  input name: "waterSensor", type: "capability.waterSensor", title: "Water/Rain Sensor", width: 12, submitOnChange: true, multiple: true
+                  input name: "waterSensor", type: "capability.waterSensor", title: "Water/Rain Sensor", width: waterSensor ? 4 : 12, submitOnChange: true, multiple: true
+                  if (waterSensor) {
+                     input name: "waterSensorWetDuration", type: "number", title: "Duration (mins) for which to consider grass wet after water sensor event", width: 4, required: true
+                     input name: "waterSensorWetDuringDay", type: "bool", title: "Daytime Duration?", defaultValue: false, width: 4, required: true
+                  }
                   input name: "irrigationValves", type: "capability.valve", title: "Irrigation Valve(s)", multiple: true, submitOnChange:true, width: irrigationValves ? 4 : 12 
                   if (irrigationValves) {
                      input name: "irrigationWetDuration", type: "number", title: "Duration (mins) for which to consider grass wet after irrigation event", width: 4, required: true
@@ -245,6 +250,7 @@ def instancePage() {
             }
             section (getInterface("header", " Options")) {  
                 input name: "resetBackup", type: "bool", title: "Clear Any Pending Backup Window?", width: 12, submitOnChange: false
+                input name: "mowDurationTrackingInterval", type: "number", title: "Mowing Duration Tracking Interval (mins)", width: 4, required: true, defaultValue: 15
             }
             section("") {                    
                 footer()   
@@ -262,10 +268,9 @@ def installed() {
 
 def updated() {
     selectiveUnschedule(true)
+ //   unschedule()
 	unsubscribe()
-    // state.clear()
-    if (resetBackup) state.backup = [:]
-    state.parkConditions.valve = false
+ //   state.clear()
 	initialize()
 }
 
@@ -286,7 +291,8 @@ def selectiveUnschedule(unscheduleActivation = false) {
     unschedule(backupWindowPreCheck)
     unschedule(handleExpiredBackupMowingWindow)
     unschedule(park)
-    // keep delayed weather and irrigation valve methods scheduled
+    unschedule(trackTodaysMowing)
+    // keep delayed weather, water sensor, and irrigation valve methods scheduled
 }
 
 def uninstalled() {
@@ -296,27 +302,33 @@ def uninstalled() {
 
 def initialize() {
     logDebug("Initializing ${app.label}")
-    
-    deleteChildDevices()
-    createCompanionDevice()
 
-    if (!state.currentWindow) state.currentWindow = [:]  // currentWindow is the mowing window that is currently in progress, if any
-    if (!state.todaysWindow) state.todaysWindow = [:]    // todaysWindow is the mwoing window that starts today, if any. It starts today, but may span into tomorrow.
     if (!state.parkConditions) state.parkConditions = [:]
+    state.parkConditions.valve = false
     if (!state.pauseConditions) state.pauseConditions = [:]
     if (!state.consecutiveMissedWindows) state.consecutiveMissedWindows = 0
     if (!state.consecutiveFulfilledWindows) state.consecutiveFulfilledWindows = 0 
     if (!state.apiConnectionLost) state.apiConnectionLost = [:]
+    if (!state.mowingDuration) state.mowingDuration = [history: [], average: 0]
+    if (resetBackup) state.backup = [:]    
     if (settings["husqvarnaMowers"]) {
         if (!state.mowers) state.mowers = [:]
         for (mower in settings["husqvarnaMowers"]) {
             def serial = mower.currentValue("serialNumber")
-            if (!state.mowers[serial]) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false]
+            if (!state.mowers[serial]) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, mowedDurationToday: 0, timeStartedMowingToday: null, current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false]
             state.mowers[serial].userForcingMowing = false
             state.mowers[serial].parkedByApp = false
             state.mowers[serial].pausedByApp = false
         }
     }
+
+    def child = getChildDevice("MowBotTamerDevice${app.id}")
+    if (child == null) {
+        String childNetworkID = "MowBotTamerDevice${app.id}"
+        child = addChildDevice("lnjustin", "MowBot Tamer Device", childNetworkID, [label:"MowBot Tamer Device ${app.label}", isComponent:true, name:"MowBot Tamer Device"])
+        child.sendEvent(name: "switch", value: "on") // create device with assumption of activation
+    }    
+    
     if (isDeactivated == null || isDeactivated == false) {
         if (trigger == "By Avg High/Low Temp") {
             subscribe(tempSensor, "temperature", tempSensorHandler)
@@ -324,7 +336,8 @@ def initialize() {
             tempTriggerCheck()
         }
         else if (trigger == "By Switch") {
-            // nothing to do
+            state.activationSwitch = child.currentValue("switch")
+            switchTriggerCheck()
         }
         else if (trigger == "By Date") {
             logDebug("Checking Trigger By Date in ${app.label}")
@@ -337,15 +350,6 @@ def initialize() {
     else if (isDeactivated == true) state.activated = false
     
     updateActivationStatus()   
-}
-
-def createCompanionDevice()
-{
-    def child = getChildDevice("MowBotTamerDevice${app.id}")
-    if (child == null) {
-        String childNetworkID = "MowBotTamerDevice${app.id}"
-        child = addChildDevice("lnjustin", "MowBot Tamer Device", childNetworkID, [label:"MowBot Tamer Device ${app.label}", isComponent:true, name:"MowBot Tamer Device"])
-    }
 }
 
 def deleteCompanionDevice()
@@ -468,6 +472,10 @@ def deactivate() {
 }
 
 def activate() {
+    logDebug("Activate called.")
+    schedule("0 59 23 1/1 * ? *", resetTodaysMowing)
+    schedule('0 */' + settings["mowDurationTrackingInterval"] + ' * ? * *', trackTodaysMowing)
+   // runIn(settings["mowDurationTrackingInterval"]*60, trackTodaysMowing)
     subscribe(settings["husqvarnaMowers"], "mowerActivity", mowerActivityHandler)
     
     def notifications = parent.getNotificationTypes()
@@ -481,6 +489,7 @@ def activate() {
     if (settings["parkWhenGrassWet"] == true) {
         if (settings["irrigationValves"] != null) subscribe(settings["irrigationValves"], "valve", irrigationValveHandler)
         if (settings["openWeatherDevice"] != null) subscribe(settings["openWeatherDevice"], "condition_code", openWeatherHandler)
+        if (settings["waterSensor"] != null) subscribe(settings["waterSensor"], "water", waterSensorHandler)
     }
 
     scheduleMowers()
@@ -513,13 +522,13 @@ def activate() {
             
             if (state.mowers[serial] != null && state.mowers[serial]?.parkedByApp == false && state.mowers[serial].userForcingMowing == false && (activity == "MOWING" || activity == "LEAVING")) {              
                 logDebug("Checking if need to park before window ends")
-                state.mowers[serial]?.timeStartedMowing = state.mowers[serial]?.timeStartedMowing == null ? now().getTime() : state.mowers[serial]?.timeStartedMowing
+                state.mowers[serial]?.timeStartedMowing = state.mowers[serial]?.timeStartedMowing == null ? new Date().getTime() : state.mowers[serial]?.timeStartedMowing
                 def durationLeftToMow = getRequiredMowingDuration() - state.mowers[serial]?.mowedDurationSoFar
                 def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
                 def stopByDurationDate = new Date(stopByDuration)
                 def windowEnd = getNextMowingWindowEnd()
                 logDebug("Window Ends ${windowEnd}. Stop By Time is ${stopByDurationDate}")
-                if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now())) {
+                if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(new Date())) {
                     logDebug("Scheduling premature park for ${stopByDurationDate}")
                     runOnce(stopByDurationDate, park, [data: [serial: serial], overwrite: false])
                 }
@@ -530,12 +539,52 @@ def activate() {
     else endMowingWindow()
 }
 
+def resetTodaysMowing() {     
+    state.mowers.each { serial, mower ->   
+        mower.mowedDurationToday = 0
+        def now = new Date().getTime()
+        def isMowing = isMowerMowing(serial)
+        mower.timeStartedMowingToday = isMowing ? now : null
+    }   
+}
+
+def trackTodaysMowing() {
+    def minDurationMowed = null
+    Long now = new Date().getTime()
+    state.mowers.each { serial, mower ->   
+        def isMowing = isMowerMowing(serial)
+        def durationMowed = 0
+        if (isMowing) {
+            if (mower.timeStartedMowingToday == null) mower.timeStartedMowingToday = now
+            durationMowed = mower.mowedDurationToday + (now - mower.timeStartedMowingToday as Long)
+            logDebug("Duration mowed = ${durationMowed}")
+        }
+        else {
+            durationMowed = mower.mowedDurationToday
+        }
+        if (minDurationMowed == null || durationMowed < minDurationMowed) minDurationMowed = durationMowed
+    }     
+    def minsMowed = msToMins(minDurationMowed)
+    updateDeviceData([minsMowedToday: minsMowed, minsMowedTodayString: formatMinsToTime(minsMowed)]) 
+ //   runIn(settings["mowDurationTrackingInterval"]*60, trackTodaysMowing)
+}
+
+def isMowerMowing(serial) {
+    def isMowing = false
+    for (mower in settings["husqvarnaMowers"]) { 
+        def serialNum = mower.currentValue("serialNumber")        
+        if (serial == serialNum) {
+            isMowing = (mower.currentValue("mowerActivity") == "MOWING") ? true : false
+        }
+    }
+    return isMowing
+}
+
 def subscribeForParkPause(forcedMowing = false) {
     if (!forcedMowing) {
         if (settings["parkWhenGrassWet"] == true) {
             if (settings["leafWetnessSensor"] != null) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
             if (settings["humidityMeasurement"] != null) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
-            if (settings["waterSensor"] != null) subscribe(settings["waterSensor"], "water", waterSensorHandler)
         }
         if (settings["parkWhenTempHot"] == true && settings["parkTempSensor"] != null) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
         if (settings["parkWhenPresenceArrivesLeaves"] == true && settings["presenceSensors"] != null) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
@@ -544,7 +593,6 @@ def subscribeForParkPause(forcedMowing = false) {
     else {
         if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness)) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
         if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity)) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Water Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.water)) subscribe(settings["waterSensor"], "water", waterSensorHandler)
         if (settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature)) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
         if (settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence)) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
         if (settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors)) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)      
@@ -560,8 +608,7 @@ def subscribeForParkPause(forcedMowing = false) {
 def unsubscribeForParkPause() {
     unsubscribe(settings["leafWetnessSensor"])
     unsubscribe(settings["humidityMeasurement"])
-    unsubscribe(settings["waterSensor"])
-    // weather and irrigation persistently scheduled
+    // weather, water sensor, and irrigation persistently scheduled since have to track duration after event
 
     unsubscribe(settings["parkTempSensor"])  
     unsubscribe(settings["presenceSensors"])
@@ -750,10 +797,12 @@ def scheduleMowers() {
 
 def startMowingWindow() {
     state.isInMowingWindow = true
+    updateDeviceData([isInMowingWindow: true, windowEnd: extractTimeFromDate(getNextMowingWindowEnd())])
 }
 
 def endMowingWindow() {
     state.isInMowingWindow = false
+    updateDeviceData([isInMowingWindow: false, windowEnd: "none"])
     state.isInMowingWindowGracePeriod = true
     runIn(settings["pollingInterval"], endGracePeriod)
 }
@@ -1030,6 +1079,25 @@ def mowerActivityHandler(evt) {
     state.mowers[serial]?.previous.activity = state.mowers[serial]?.current.activity
     state.mowers[serial]?.current.activity = activity
     
+    if (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING") {
+        state.mowers[serial]?.timeStartedMowingToday = activityTime
+        updateDeviceData([lastStartedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])
+    }
+    else if ((state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") {
+        if (state.mowers[serial]?.mowedDurationToday == null) state.mowers[serial]?.mowedDurationToday = 0
+        state.mowers[serial]?.mowedDurationToday = state.mowers[serial]?.mowedDurationToday + (activityTime - state.mowers[serial]?.timeStartedMowingToday)
+        updateDeviceData([lastStoppedMowing: extractTimeFromDate(evt.getDate())])
+        
+        def nextStart = mower.currentValue("plannerNextStart") as Long
+        if (nextStart != null) {
+           // def nextStartDate = new Date(nextStart)  
+          //  def formattedNextStart = extractTimeFromDate(nextStartDate, location.timeZone) 
+            def formattedNextStart = "now"
+            if (nextStart != 0) formattedNextStart = epochToDt(nextStart)
+            updateDeviceData([nextStartTime: formattedNextStart])
+        }       
+    }
+    
     logDebug("mowerActivityHandler: mower previous activity = ${state.mowers[serial]?.previous.activity}. Mower current activity = ${state.mowers[serial]?.current.activity}")
     
     if (isMowingScheduledForNow() && (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING")) {
@@ -1096,6 +1164,7 @@ def mowerActivityHandler(evt) {
     else {
         // TO DO: anything else here?    
     }
+    
 }
 
 def handleExpiredMowingWindow() {   
@@ -1144,7 +1213,7 @@ def handleExpiredMowingWindow() {
         }
     }
     
-    unsubscribeForParkPause()
+    if (!anyMowerForcingMowing()) unsubscribeForParkPause()
 }
 
 def handleExpiredBackupMowingWindow() {
@@ -1179,7 +1248,7 @@ def handleExpiredBackupMowingWindow() {
         else incrementFulfilledWindows()
     }
     
-    unsubscribeForParkPause()
+    if (!anyMowerForcingMowing()) unsubscribeForParkPause()
     
     updateDeviceData([backupTriggered: false, backupDuration: "none"])
 }
@@ -1473,7 +1542,6 @@ def handleParkConditionChange() {
 def temperatureHandler(evt) {
     def sensorId = evt.getDeviceId().toString()
     def temp = evt.value.toFloat()
-    updateDeviceData([temperature: temp])
     if (state.temp == null) state.temp = [:]
     if (temp >= settings["parkTempThreshold"]) {
         if (state.temp.numAbove == null) {
@@ -1490,18 +1558,26 @@ def temperatureHandler(evt) {
     
     if (state.temp.numAbove != null && state.temp.numAbove >= settings["parkTempThresholdTimes"]) {
         state.parkConditions.temperature = true
+        updateDeviceData([temperatureStatus: "Above"])
         handleParkConditionChange()
     }
-    else if (state.temp.numBelow  != null && state.temp.numBelow  >= settings["parkTempThresholdTimes"]) {
+    else if (state.temp.numAbove != null && state.temp.numAbove > 0 && state.temp.numAbove < settings["parkTempThresholdTimes"]) {
+        updateDeviceData([temperatureStatus: "Transitioning Above"])
+    }
+    else if (state.temp.numBelow != null && state.temp.numBelow > 0 && state.temp.numBelow < settings["parkTempThresholdTimes"]) {
+        updateDeviceData([temperatureStatus: "Transitioning Below"])
+    }
+    else if (state.temp.numBelow  != null && state.temp.numBelow >= settings["parkTempThresholdTimes"]) {
         state.parkConditions.temperature = false
+        updateDeviceData([temperatureStatus: "Below"])
         handleParkConditionChange()
     }
+    
 }
 
 def updateAllParkConditions() {
     if (settings["parkWhenTempHot"] && settings["parkTempSensor"] && settings["parkTempThreshold"]) {
         def temp = settings["parkTempSensor"].currentValue("temperature")
-        updateDeviceData([temperature: temp])
         if (temp >= settings["parkTempThreshold"]) state.parkConditions.temperature = true
         else state.parkConditions.temperature = false
     }   
@@ -1526,7 +1602,6 @@ def updateAllParkConditions() {
         def anyMet = false
         for (sensor in settings["leafWetnessSensor"]) {
             def leafWetness = sensor.currentValue("leafWetness")
-            updateDeviceData([leafWetness: leafWetness])
             if (leafWetness >= settings["leafWetnessThreshold"]) anyMet = true
         }
         state.parkConditions.leafWetness = anyMet
@@ -1582,48 +1657,41 @@ def parkOnSwitchHandler(evt) {
 }
 
 def leafWetnessHandler(evt) {
-    def sensorId = evt.getDeviceId().toString()
     def leafWetness = evt.value.toInteger()
-    updateDeviceData([leafWetness: leafWetness])
     if (state.leafWetness == null) state.leafWetness = [:]
-    if (state.leafWetness[sensorId] == null) state.leafWetness[sensorId] = [:] 
     if (leafWetness >= settings["leafWetnessThreshold"]) {
-        if (state.leafWetness[sensorId].numAbove == null) {
-           state.leafWetness[sensorId].numAbove = 1
+        if (state.leafWetness.numAbove == null) {
+           state.leafWetness.numAbove = 1
         }
-        else state.leafWetness[sensorId].numAbove++
-        state.leafWetness[sensorId].numBelow = 0    
+        else state.leafWetness.numAbove++
+        state.leafWetness.numBelow = 0    
     }
     else {
-        if (state.leafWetness[sensorId].numBelow  == null) state.leafWetness[sensorId].numBelow  = 1
-        else state.leafWetness[sensorId].numBelow ++
-        state.leafWetness[sensorId].numAbove = 0  
+        if (state.leafWetness.numBelow  == null) state.leafWetness.numBelow  = 1
+        else state.leafWetness.numBelow ++
+        state.leafWetness.numAbove = 0  
     }
     
-    if (state.leafWetness[sensorId].numAbove != null && state.leafWetness[sensorId].numAbove >= settings["leafWetnessThresholdTimes"]) {
-        state.leafWetness[sensorId]["wet"] = true
-        handleLeafWetnessChange()
+    if (state.leafWetness.numAbove != null && state.leafWetness.numAbove >= settings["leafWetnessThresholdTimes"]) {
+        state.parkConditions.leafWetness = true
+        updateDeviceData([leafWetnessStatus: "Above"])  
+        handleParkConditionChange()
     }
-    else if (state.leafWetness[sensorId].numBelow  != null && state.leafWetness[sensorId].numBelow  >= settings["leafWetnessThresholdTimes"]) {
-        state.leafWetness[sensorId]["wet"] = false
-        handleLeafWetnessChange()
+    else if (state.leafWetness.numAbove != null && state.leafWetness.numAbove > 0 && state.leafWetness.numAbove < settings["leafWetnessThresholdTimes"]) {
+        updateDeviceData([leafWetnessStatus: "Transitioning Above"])    
     }
-}
-
-def handleLeafWetnessChange() {
-    def anyMet = false
-    state.leafWetness.each { deviceId, sensor ->
-        if (sensor["wet"] != null && sensor["wet"] == true) {
-            anyMet = true
-        }
-    }   
-    state.parkConditions.leafWetness = anyMet
-    handleParkConditionChange()
+    else if (state.leafWetness.numBelow != null && state.leafWetness.numBelow > 0 && state.leafWetness.numBelow < settings["leafWetnessThresholdTimes"]) {
+        updateDeviceData([leafWetnessStatus: "Transitioning Below"])    
+    }
+    else if (state.leafWetness.numBelow  != null && state.leafWetness.numBelow  >= settings["leafWetnessThresholdTimes"]) {
+        state.parkConditions.leafWetness = false
+        updateDeviceData([leafWetnessStatus: "Below"])  
+        handleParkConditionChange()
+    }
 }
 
 def openWeatherHandler(evt) {
     def weather = evt.value  
-    updateDeviceData([weather: weather])
     if (weather == "thunderstorm" || weather == "drizzle" || weather == "rain" || weather == "thunderstorm" || weather == "snow") {
         state.parkConditions.weather = true
         unschedule(delayedWeather)
@@ -1685,42 +1753,37 @@ def delayedWeather() {
 }
 
 def humidityHandler(evt) {
-    def sensorId = evt.getDeviceId().toString()
     def humidity = evt.value.toFloat()
     if (state.humidity == null) state.humidity = [:]
-    if (state.humidity[sensorId] == null) state.humidity[sensorId] = [:] 
     if (humidity >= settings["humidityThreshold"]) {
-        if (state.humidity[sensorId].numAbove == null) {
-           state.humidity[sensorId].numAbove = 1
+        if (state.humidity.numAbove == null) {
+           state.humidity.numAbove = 1
         }
-        else state.humidity[sensorId].numAbove++
-        state.humidity[sensorId].numBelow = 0    
+        else state.humidity.numAbove++
+        state.humidity.numBelow = 0    
     }
     else {
-        if (state.humidity[sensorId].numBelow  == null) state.humidity[sensorId].numBelow  = 1
-        else state.humidity[sensorId].numBelow ++
-        state.humidity[sensorId].numAbove = 0  
+        if (state.humidity.numBelow  == null) state.humidity.numBelow  = 1
+        else state.humidity.numBelow ++
+        state.humidity.numAbove = 0  
     }
     
-    if (state.humidity[sensorId].numAbove != null && state.humidity[sensorId].numAbove >= settings["humidityThresholdTimes"]) {
-        state.humidity[sensorId]["humid"] = true
-        handleHumidityChange()
+    if (state.humidity.numAbove != null && state.humidity.numAbove >= settings["humidityThresholdTimes"]) {
+        state.parkConditions.humidity = true
+        updateDeviceData([humidityStatus: "Above"])  
+        handleParkConditionChange()
     }
-    else if (state.humidity[sensorId].numBelow  != null && state.humidity[sensorId].numBelow  >= settings["humidityThresholdTimes"]) {
-        state.humidity[sensorId]["humid"] = false
-        handleHumidityChange()
+    else if (state.humidity.numAbove != null && state.humidity.numAbove > 0 && state.humidity.numAbove < settings["humidityThresholdTimes"]) {
+        updateDeviceData([humidityStatus: "Transitioning Above"])
     }
-}
-
-def handleHumidityChange() {
-    def anyMet = false
-    state.humidity.each { deviceId, sensor ->
-        if (sensor["humid"] != null && sensor["humid"] == true) {
-            anyMet = true
-        }
-    }   
-    state.parkConditions.humidity = anyMet
-    handleParkConditionChange()
+    else if (state.humidity.numBelow != null && state.humidity.numBelow > 0 && state.humidity.numBelow < settings["humidityThresholdTimes"]) {
+        updateDeviceData([humidityStatus: "Transitioning Below"])
+    }
+    else if (state.humidity.numBelow  != null && state.humidity.numBelow  >= settings["humidityThresholdTimes"]) {
+        state.parkConditions.humidity = false
+        updateDeviceData([humidityStatus: "Below"])  
+        handleParkConditionChange()
+    }
 }
 
 def waterSensorHandler(evt) {
@@ -1729,9 +1792,66 @@ def waterSensorHandler(evt) {
        def water = sensor.currentValue("water")
         if (water == "wet") anyMet = true
     }
-    state.parkConditions.water = anyMet
+    
+     if (anyMet == true) {
+        state.parkConditions.water = true
+        unschedule(delayedWaterSensorEvent)
+        updateDeviceData([parkFromWaterSensor: true, parkFromWaterSensorExpires: "none"])
+        handleParkConditionChange()
+    }
+    else if (anyMet == false && state.parkConditions?.water == null) {
+        state.parkConditions.valve = false
+        updateDeviceData([parkFromWaterSensor: false, parkFromWaterSensorExpires: "none"])
+        handleParkConditionChange()
+    }
+    else if (anyMet == false && state.parkConditions?.water != null && state.parkConditions.water == true) {
+        logDebug("Water Sensors all dry now. Scheduling delayed update of park conditions according to settings.")
+        if (settings["waterSensorWetDuringDay"] == false) runIn(settings["waterSensorWetDuration"]*60, delayedWaterSensorEvent)
+        else if (settings["waterSensorWetDuringDay"] == true) {
+             def dayTime = getSunriseAndSunset()
+             def now = new Date()
+             def wetDuration = settings["waterSensorWetDuration"].toInteger()
+             def delayedTime = adjustDateByMins(now, wetDuration)
+            if (now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
+                if (delayedTime.after(dayTime.sunrise) && dayTime.sunset.after(delayedTime)) {
+                    // full delay in the daytime, so just schedule for delayedTime
+                    runOnce(delayedTime, delayedWaterSensorEvent)
+                    updateDeviceData([parkFromWaterSensorExpires: delayedTime.format("h:mm a")])
+                }
+                else if (delayedTime.after(dayTime.sunrise) && !dayTime.sunset.after(delayedTime)) {
+                    // sun sets before delay ends
+                    def partialDelay = getSecondsBetweenDates(now, dayTime.sunset)
+                    def delayRemainder = (settings["waterSensorWetDuration"]*60) - partialDelay
+                    Integer delayRemainderMins = Math.round(delayRemainder/60)
+                    def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: delayRemainderMins])
+                    def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
+                    runOnce(offsetSunriseTomorrow, delayedWaterSensorEvent)  
+                    updateDeviceData([parkFromWaterSensorExpires: offsetSunriseTomorrow.format("h:mm a")])
+                }
+            }
+            else if (now.after(dayTime.sunrise) && !dayTime.sunset.after(now)) {
+                // after sunset already, so full delay will be after sunrise tomorrow                
+                def offsetSunriseToday = getSunriseAndSunset([sunriseOffset: wetDuration])
+                def offsetSunriseTomorrow = offsetSunriseToday.sunrise + 1 // approximate tomorrow's sunrise as today's sunrise
+                runOnce(offsetSunriseTomorrow, delayedWaterSensorEvent)
+                updateDeviceData([parkFromWaterSensorExpires: offsetSunriseTomorrow.format("h:mm a")])
+            }
+            else if (!now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
+                // before sunrise, so full delay will be after sunrise today
+                def offsetSunrise = getSunriseAndSunset([sunriseOffset: wetDuration])
+                runOnce(offsetSunrise.sunrise, delayedWaterSensorEvent)
+                updateDeviceData([parkFromWaterSensorExpires: offsetSunrise.sunrise.format("h:mm a")])
+            }
+        }
+    }
+}
+
+def delayedWaterSensorEvent() {
+    state.parkConditions.water = false
+    updateDeviceData([parkFromWaterSensor: false, parkFromWaterSensorExpires: "none"])
     handleParkConditionChange()
 }
+
 
 def irrigationValveHandler(evt) {
     def anyOpen = false
@@ -1746,12 +1866,12 @@ def irrigationValveHandler(evt) {
     if (anyOpen == true) {
         state.parkConditions.valve = true
         unschedule(delayedIrrigationValveClosed)
-        updateDeviceData([parkFromWeatherExpires: "none"])
+        updateDeviceData([parkFromValve: true, parkFromValveExpires: "none"])
         handleParkConditionChange()
     }
     else if (anyOpen == false && state.parkConditions?.valve == null) {
         state.parkConditions.valve = false
-        updateDeviceData([parkFromWeatherExpires: "none"])
+        updateDeviceData([parkFromValve: false, parkFromValveExpires: "none"])
         handleParkConditionChange()
     }
     else if (anyOpen == false && state.parkConditions?.valve != null && state.parkConditions.valve == true) {
@@ -1799,7 +1919,7 @@ def irrigationValveHandler(evt) {
 
 def delayedIrrigationValveClosed() {
     state.parkConditions.valve = false
-    updateDeviceData([parkFromValveExpires: "none"])
+    updateDeviceData([parkFromValve: false, parkFromValveExpires: "none"])
     handleParkConditionChange()
 }
 
@@ -2009,6 +2129,44 @@ def adjustTimeBySecs(time, Integer secs) {
     Date newDate = cal.getTime()
     return newDate
 }
+
+def formatSecsToTime(duration) {
+    def hours = (duration / 3600).intValue()
+    def mins = ((duration % 3600) / 60).intValue()
+    return String.format("%01d:%02d", hours, mins)
+}
+
+def formatMinsToTime(duration) {
+    def hours = (duration / 60).intValue()
+    def mins = (duration % 60).intValue()
+    return String.format("%01d:%02d", hours, mins)
+}
+
+def extractTimeFromDate(Date date, timezone = null) {
+    if (timezone == null) return date.format("h:mm a")
+    else {
+        Calendar cal = Calendar.getInstance()
+        cal.setTimeZone(timezone)
+        cal.setTime(date)
+        Date newDate = cal.getTime()
+        return newDate 
+    }
+}
+
+def epochToDt(val) {
+    return formatDt(new Date(val))
+}
+
+def formatDt(dt) {
+    def tf = new SimpleDateFormat("MMM d, yyyy - h:mm:ss a")
+    if(location?.timeZone) { tf?.setTimeZone(location?.timeZone) }
+    else {
+        log.warn "Hubitat TimeZone is not found or is not set... Please Try to open your Hubitat location and Press Save..."
+        return null
+    }
+    return tf.format(dt)
+}
+
 
 def logDebug(msg) {
     if (parent.getLogDebugEnabled()) {
