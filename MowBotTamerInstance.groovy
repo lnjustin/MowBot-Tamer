@@ -19,6 +19,7 @@
  *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
  *  v0.0.5 - Bug fixes
  *  v0.0.6 - Added delay for water sensor; Bug fixes
+ *  v0.0.7 - Bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -178,10 +179,10 @@ def instancePage() {
                      input name: "openClosePauseDuration", type: "number", title: "Pause Duration (Seconds) on Sensor Event", submitOnChange:false, width: 4, required: true
                  }
                 input name: "pauseWhenPresenceArrivesLeaves", type: "bool", title: getInterface("highlightedInput", "Presence Sensor Arrives/Leaves?"), defaultValue: false, submitOnChange:true
-                if (parkWhenPresenceArrivesLeaves == true) {
-                     input name: "pause_presenceSensors", type: "capability.presenceSensor", title: "Presence Sensor(s)", submitOnChange:false, width: 4, multiple: true, required: true
-                     paragraph getInterface("note", "Mower(s) will pause when ANY of the selected Presence Sensors arrive.")
-                    input name: "presencePauseDuration", type: "number", title: "Pause Duration (Seconds) on Presence Arrival", submitOnChange:false, width: 4, required: true
+                if (pauseWhenPresenceArrivesLeaves == true) {
+                    paragraph getInterface("note", "Mower(s) will pause when ANY of the selected Presence Sensors arrive.")
+                     input name: "pause_presenceSensors", type: "capability.presenceSensor", title: "Presence Sensor(s)", submitOnChange:false, width: 4, multiple: true, required: true                    
+                    input name: "presencePauseDuration", type: "number", title: "Pause Duration (Secs) on Arrival", submitOnChange:false, width: 4, required: true
                 } 
                 input name: "pauseWhenSwitchOnOff", type: "bool", title: getInterface("highlightedInput", "Switch is Flipped?"), defaultValue: false, submitOnChange:true
                  if (pauseWhenSwitchOnOff) {
