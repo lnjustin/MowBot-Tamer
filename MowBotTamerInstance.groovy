@@ -22,6 +22,7 @@
  *  v0.0.7 - Bug fixes
  *  v0.0.8 - Added threshold options for backup window; Bug fixes
  *  v0.0.9 - Static cutting height
+ *  v0.0.10 - Bug Fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -314,9 +315,8 @@ def uninstalled() {
 def initialize() {
     logDebug("Initializing ${app.label}")
 
-    if (!state.parkConditions) state.parkConditions = [:]
-    state.parkConditions.valve = false
-    if (!state.pauseConditions) state.pauseConditions = [:]
+    if (!state.parkConditions) state.parkConditions = [leafWetness: false, weather: false, temperature: false, humidity: false, valve: false, presence: false, water: false, switchSensors: false]
+    if (!state.pauseConditions) state.pauseConditions = [button:false, motion:false, contact:false, presence:false, switchSensors:false]
     if (!state.consecutiveMissedWindows) state.consecutiveMissedWindows = 0
     if (!state.consecutiveFulfilledWindows) state.consecutiveFulfilledWindows = 0 
     if (!state.apiConnectionLost) state.apiConnectionLost = [:]
