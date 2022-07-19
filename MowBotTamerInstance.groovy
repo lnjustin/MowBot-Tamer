@@ -21,6 +21,7 @@
  *  v0.0.6 - Added delay for water sensor; Bug fixes
  *  v0.0.7 - Bug fixes
  *  v0.0.8 - Added threshold options for backup window; Bug fixes
+ *  v0.0.9 - Static cutting height
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -242,11 +243,14 @@ def instancePage() {
                 input name: "forcedMowingParkConditionsEnforced", type: "enum", width: 12, multiple: true, title: "Park conditions to enforce even when mowing forced", options: sensorOptions, submitOnChange: true, required: false
                 paragraph getInterface("note", " By default, all park conditions will be ignored when mowing is forced. Specify exceptions here, to enforce select park conditions even when mowing is forced. For example, still park the mower upon rain, even if mowing has been forced.") 
             }
-            section (getInterface("header", " Dynamic Cutting Height")) {  
-                paragraph getInterface("note", " Adjust cutting height dynamically depending on how long it's been since the mower(s) have been able to mow.")             
-               input name: "dynamicCuttingHeight", type: "bool", title: "Dynamic Cutting Height?", width: 12, submitOnChange: true
-               if (dynamicCuttingHeight) {
-                   input name: "cuttingHeight", type: "number", title: "Cutting Height", width: 4, required: true
+            section (getInterface("header", " Cutting Height")) {  
+                paragraph getInterface("note", "Static cutting height sets the cutting height as specified when this MowBot Tamer Instance is activated. Dynamic cutting height adjusts the cutting height depending on how long it's been since the mower(s) have been able to mow.")             
+               input name: "cuttingHeightSetting", type: "enum", title: "Select Cutting Height Adjustment Setting", options: ["None", "Static", "Dynamic"], width: 12, submitOnChange: true
+               if (cuttingHeightSetting == "Static") {
+                   input name: "staticCuttingHeight", type: "number", title: "Cutting Height", width: 4, required: true
+               }
+                else if (cuttingHeightSetting == "Dynamic") {
+                   input name: "dynamicCuttingHeight", type: "number", title: "Cutting Height", width: 4, required: true
                    paragraph getInterface("note", "Mowing window deemed missed if mower(s) do not mow at least a minimum % of the Mowing Window, between the Primary Rule and any Backup Rule(s)")
                    input name: "minPercentWindow", type: "number", title: "Minimum % of Mowing Window", width: 4, required: true
                    input name: "numMissedWindows", type: "number", title: "Number of consecutively missed Mowing Windows that triggers a cutting height increase event", width: 4, required: true
@@ -497,6 +501,12 @@ def activate() {
         if (settings["irrigationValves"] != null) subscribe(settings["irrigationValves"], "valve", irrigationValveHandler)
         if (settings["openWeatherDevice"] != null) subscribe(settings["openWeatherDevice"], "condition_code", openWeatherHandler)
         if (settings["waterSensor"] != null) subscribe(settings["waterSensor"], "water", waterSensorHandler)
+    }
+    
+    if (settings["cuttingHeightSetting"] == "Static" && settings["staticCuttingHeight"] != null) {
+        for (mower in settings["husqvarnaMowers"]) { 
+            mower.setCuttingHeight(settings["staticCuttingHeight"])    
+        }
     }
 
     scheduleMowers()
@@ -1210,7 +1220,7 @@ def handleExpiredMowingWindow() {
              notify("${app.label} Mowing Deficiency: ${msToMins(maxDurationLeftToMow)} mins mowing missed.", "backupRule")
          }
     }
-    if (dynamicCuttingHeight) {           
+    if (settings["cuttingHeightSetting"] == "Dynamic") {           
         if (addBackupWindow == false) {
             // update height state if there is no backup window. If there is a backup window, wait until the backup window to determine whether the window is missed
             def percentWindowMowed = (1 - (maxDurationLeftToMow / requiredDuration)) * 100  // maxDurationLeftToMow reflects the duration left to mow to meet the required duration
@@ -1285,7 +1295,7 @@ def incrementFulfilledWindows() {
 def incrementCuttingHeight() {
     def maxHeight = 9 // max height for currently supported Husqvarna mowers   
     def setPoint = 0
-    state.mowers.each { serial, mower ->   
+    for (mower in settings["husqvarnaMowers"]) { 
         def currentHeight = mower.currentValue("cuttingHeight")
         if (currentHeight < 9) {
             def dynamicHeight = Math.min(maxHeight, currentHeight + settings["numLevelsIncrease"])
@@ -1297,9 +1307,9 @@ def incrementCuttingHeight() {
 }
 
 def decrementCuttingHeight() {
-    def minHeight = settings["cuttingHeight"]
+    def minHeight = settings["dynamicCuttingHeight"]
     def setPoint = 10
-    state.mowers.each { serial, mower ->   
+    for (mower in settings["husqvarnaMowers"]) { 
         def currentHeight = mower.currentValue("cuttingHeight")       
         if (currentHeight > minHeight) {
             def dynamicHeight = Math.max(minHeight, currentHeight - settings["numLevelsDecrease"])
