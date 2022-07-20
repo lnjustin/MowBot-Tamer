@@ -1,9 +1,9 @@
 {
   "packageName": "MowBot Tamer",
   "author": "Justin Leonard",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "minimumHEVersion": "1.0",
-  "dateReleased": "2022-07-18",
+  "dateReleased": "2022-07-20",
   "apps": [
     {
       "id": "dbd9b71f-797d-4eb7-bd46-5f287f09e508",
