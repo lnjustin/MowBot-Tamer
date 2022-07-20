@@ -23,6 +23,7 @@
  *  v0.0.8 - Added threshold options for backup window; Bug fixes
  *  v0.0.9 - Static cutting height
  *  v0.0.10 - Bug Fixes
+ *  v0.0.11 - Bug Fixes; Added threshold options for forced mowing
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -243,6 +244,11 @@ def instancePage() {
                 paragraph getInterface("note", " Specify options for how to handle mowing that is forced via the native mower app or the Hubitat mower device")  
                 input name: "forcedMowingParkConditionsEnforced", type: "enum", width: 12, multiple: true, title: "Park conditions to enforce even when mowing forced", options: sensorOptions, submitOnChange: true, required: false
                 paragraph getInterface("note", " By default, all park conditions will be ignored when mowing is forced. Specify exceptions here, to enforce select park conditions even when mowing is forced. For example, still park the mower upon rain, even if mowing has been forced.") 
+                if (forcedMowingParkConditionsEnforced) {
+                    if (forcedMowingParkConditionsEnforced.contains("Leaf Wetness Sensor")) input name: "leafWetnessThresholdForced", type: "number", title: "Leaf Wetness Threshold Value", width: 6, required: true
+                    if (forcedMowingParkConditionsEnforced.contains("Humidity or Soil Moisture Sensor")) input name: "humidityThresholdForced", type: "number", title: "Humidty/Moisture Threshold Value", width: 6, required: true
+                    if (forcedMowingParkConditionsEnforced.contains("Temperature Sensor")) input name: "parkTempThresholdForced", type: "number", title: "Temperature Threshold", width: 6, required: true                   
+                }
             }
             section (getInterface("header", " Cutting Height")) {  
                 paragraph getInterface("note", "Static cutting height sets the cutting height as specified when this MowBot Tamer Instance is activated. Dynamic cutting height adjusts the cutting height depending on how long it's been since the mower(s) have been able to mow.")             
@@ -608,11 +614,11 @@ def subscribeForParkPause(forcedMowing = false) {
         if (settings["parkWhenSwitchOnOff"] == true && settings["parkSwitches"] != null) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)  
     }
     else {
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness)) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity)) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature)) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence)) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors)) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)      
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness)) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity)) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature)) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence)) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors)) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)      
     }
     
     if (settings["pauseWhenMotion"] == true && settings["pause_motionSensors"] != null) subscribe(settings["pause_motionSensors"], "motion", pauseOnMotionHandler)
@@ -1103,17 +1109,17 @@ def mowerActivityHandler(evt) {
     else if ((state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") {
         if (state.mowers[serial]?.mowedDurationToday == null) state.mowers[serial]?.mowedDurationToday = 0
         state.mowers[serial]?.mowedDurationToday = state.mowers[serial]?.mowedDurationToday + (activityTime - state.mowers[serial]?.timeStartedMowingToday)
-        updateDeviceData([lastStoppedMowing: extractTimeFromDate(evt.getDate())])
-        
-        def nextStart = mower.currentValue("plannerNextStart") as Long
-        if (nextStart != null) {
-           // def nextStartDate = new Date(nextStart)  
-          //  def formattedNextStart = extractTimeFromDate(nextStartDate, location.timeZone) 
-            def formattedNextStart = "now"
-            if (nextStart != 0) formattedNextStart = epochToDt(nextStart)
-            updateDeviceData([nextStartTime: formattedNextStart])
-        }       
+        updateDeviceData([lastStoppedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])     
     }
+    
+    def nextStart = mower.currentValue("plannerNextStart") as Long
+    if (nextStart != null) {
+       // def nextStartDate = new Date(nextStart)  
+      //  def formattedNextStart = extractTimeFromDate(nextStartDate, location.timeZone) 
+        def formattedNextStart = "now"
+        if (nextStart != 0) formattedNextStart = epochToDt(nextStart)
+        updateDeviceData([nextStartTime: formattedNextStart])
+    }  
     
     logDebug("mowerActivityHandler: mower previous activity = ${state.mowers[serial]?.previous.activity}. Mower current activity = ${state.mowers[serial]?.current.activity}")
     
@@ -1501,27 +1507,27 @@ def isAnyParkConditionMet(backupPrecheck = false) {
     if (anyMowerForcingMowing()) {
         logDebug("Checking if any park conditions are met for forced mowing")
 
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness) && state.parkConditions.leafWetness == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity) && state.parkConditions.humidity == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Water Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.water) && state.parkConditions.water == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Irrigation") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.valve) && state.parkConditions.valve == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Open Weather Device") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.weather) && state.parkConditions.weather == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature) && state.parkConditions.temperature == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence) && state.parkConditions.presence  == true) isMet = true
-        if (settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors) && state.parkConditions.switchSensors  == true) isMet = true        
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness) && state.parkConditions.leafWetness == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity) && state.parkConditions.humidity == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Water Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.water) && state.parkConditions.water == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Irrigation") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.valve) && state.parkConditions.valve == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Open Weather Device") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.weather) && state.parkConditions.weather == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature) && state.parkConditions.temperature == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence) && state.parkConditions.presence  == true) isMet = true
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors) && state.parkConditions.switchSensors  == true) isMet = true        
     }
     else if (isBackupMowingScheduledForNow() || backupPrecheck == true) {
         // check parking conditions accounting for any that are disabled for the backup window
         logDebug("Checking if any park conditions are met for backup window")
 
-        if (settings["backupParkConditionsToEnforce"].contains("Leaf Wetness Sensor") && state.parkConditions.leafWetness == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Humidity or Soil Moisture Sensor") && state.parkConditions.humidity == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Water Sensor") && state.parkConditions.water == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Irrigation") && state.parkConditions.valve == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Open Weather Device") && state.parkConditions.weather == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Temperature Sensor") && state.parkConditions.temperature == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Presence Sensor") && state.parkConditions.presence  == true) isMet = true
-        if (settings["backupParkConditionsToEnforce"].contains("Switch(es)") && state.parkConditions.switchSensors  == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Leaf Wetness Sensor") && state.parkConditions.leafWetness == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Humidity or Soil Moisture Sensor") && state.parkConditions.humidity == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Water Sensor") && state.parkConditions.water == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Irrigation") && state.parkConditions.valve == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Open Weather Device") && state.parkConditions.weather == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Temperature Sensor") && state.parkConditions.temperature == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Presence Sensor") && state.parkConditions.presence  == true) isMet = true
+        if (settings["backupParkConditionsToEnforce"] != null && settings["backupParkConditionsToEnforce"].contains("Switch(es)") && state.parkConditions.switchSensors  == true) isMet = true
     }
     else {
         logDebug("Checking if any park conditions are met for primary window")
@@ -1546,6 +1552,16 @@ def handleParkConditionChange() {
         else {
            logDebug("No Park Conditions Met.")
            for (mower in settings["husqvarnaMowers"]) { 
+               
+               def nextStart = mower.currentValue("plannerNextStart") as Long
+                if (nextStart != null) {
+               // def nextStartDate = new Date(nextStart)  
+              //  def formattedNextStart = extractTimeFromDate(nextStartDate, location.timeZone) 
+                def formattedNextStart = "now"
+                if (nextStart != 0) formattedNextStart = epochToDt(nextStart)
+               updateDeviceData([nextStartTime: formattedNextStart])
+               }  
+               
                def serialNum = mower.currentValue("serialNumber")
                if (state.mowers[serialNum]?.parkedByApp == true) mowOne(serialNum) // call mowOne if no park conditions met anymore, will resume schedule (if mowing window already over, resuming schedule will park mower anyway)
                else logDebug("But not commanding to mow, either because mower is already mowing or because app did not park mower.")
@@ -1561,7 +1577,8 @@ def temperatureHandler(evt) {
     def temp = evt.value.toFloat()
     if (state.temp == null) state.temp = [:]
     def tempThresh = settings["parkTempThreshold"]
-    if (isBackupMowingScheduledForNow()) tempThresh = settings["parkTempThresholdBackup"]
+    if (anyMowerForcingMowing()) tempThresh = settings["parkTempThresholdForced"]
+    else if (isBackupMowingScheduledForNow()) tempThresh = settings["parkTempThresholdBackup"]
     if (temp >= tempThresh) {
         if (state.temp.numAbove == null) {
            state.temp.numAbove = 1
@@ -1598,7 +1615,8 @@ def updateAllParkConditions(backupPrecheck = false) {
     def isBackup = isBackupMowingScheduledForNow()
     if (settings["parkWhenTempHot"] && settings["parkTempSensor"]) {
         def tempThresh = settings["parkTempThreshold"]
-        if (isBackup || backupPrecheck) tempThresh = settings["parkTempThresholdBackup"]
+        if (anyMowerForcingMowing()) tempThresh = settings["parkTempThresholdForced"]
+        else if (isBackup || backupPrecheck) tempThresh = settings["parkTempThresholdBackup"]
         if (tempThresh) {
             def temp = settings["parkTempSensor"].currentValue("temperature")
             if (temp >= tempThresh) state.parkConditions.temperature = true
@@ -1624,7 +1642,8 @@ def updateAllParkConditions(backupPrecheck = false) {
     else state.parkConditions.switchSensors = false
     if (settings["parkWhenGrassWet"] && settings["leafWetnessSensor"]) {
         def leafThresh = settings["leafWetnessThreshold"]
-        if (isBackup || backupPrecheck) leafThresh = settings["leafWetnessThresholdBackup"]
+        if (anyMowerForcingMowing()) leafThresh = settings["leafWetnessThresholdForced"]
+        else if (isBackup || backupPrecheck) leafThresh = settings["leafWetnessThresholdBackup"]
         if (leafThresh) {
             def anyMet = false
             for (sensor in settings["leafWetnessSensor"]) {
@@ -1638,7 +1657,8 @@ def updateAllParkConditions(backupPrecheck = false) {
     
     if (settings["parkWhenGrassWet"] && settings["humidityMeasurement"]) {
         def humThresh = settings["humidityThreshold"]
-        if (isBackup || backupPrecheck) humThresh = settings["humidityThresholdBackup"]
+        if (anyMowerForcingMowing()) humThresh = settings["humidityThresholdForced"]
+        else if (isBackup || backupPrecheck) humThresh = settings["humidityThresholdBackup"]
         if (humThresh) {
             def anyMet = false
             for (sensor in settings["humidityMeasurement"]) {
@@ -1692,7 +1712,8 @@ def leafWetnessHandler(evt) {
     def leafWetness = evt.value.toInteger()
     if (state.leafWetness == null) state.leafWetness = [:]
     def leafThresh = settings["leafWetnessThreshold"]
-    if (isBackupMowingScheduledForNow()) leafThresh = settings["leafWetnessThresholdBackup"]
+    if (anyMowerForcingMowing()) leafThresh = settings["leafWetnessThresholdForced"]
+    else if (isBackupMowingScheduledForNow()) leafThresh = settings["leafWetnessThresholdBackup"]
     if (leafWetness >= leafThresh) {
         if (state.leafWetness.numAbove == null) {
            state.leafWetness.numAbove = 1
@@ -1790,7 +1811,8 @@ def humidityHandler(evt) {
     def humidity = evt.value.toFloat()
     if (state.humidity == null) state.humidity = [:]
     def humThresh = settings["humidityThreshold"]
-    if (isBackupMowingScheduledForNow()) humThresh = settings["humidityThresholdBackup"]
+    if (anyMowerForcingMowing()) humThresh = settings["humidityThresholdForced"]
+    else if (isBackupMowingScheduledForNow()) humThresh = settings["humidityThresholdBackup"]
     if (humidity >= humThresh) {
         if (state.humidity.numAbove == null) {
            state.humidity.numAbove = 1
@@ -2185,21 +2207,18 @@ def extractTimeFromDate(Date date, timezone = null) {
         cal.setTimeZone(timezone)
         cal.setTime(date)
         Date newDate = cal.getTime()
-        return newDate 
+        return newDate.format("h:mm a")
     }
 }
 
 def epochToDt(val) {
-    return formatDt(new Date(val))
-}
-
-def formatDt(dt) {
+    def dt = new Date(val)
     def tf = new SimpleDateFormat("MMM d, yyyy - h:mm:ss a")
-    if(location?.timeZone) { tf?.setTimeZone(location?.timeZone) }
-    else {
-        log.warn "Hubitat TimeZone is not found or is not set... Please Try to open your Hubitat location and Press Save..."
-        return null
-    }
+  //  if(location?.timeZone) { tf?.setTimeZone(location?.timeZone) }
+  //  else {
+   //     log.warn "Hubitat TimeZone is not found or is not set... Please Try to open your Hubitat location and Press Save..."
+   //     return null
+   // }
     return tf.format(dt)
 }
 
@@ -2380,4 +2399,5 @@ def getInterface(type, txt="", link="") {
 "121" : "High internal temerature",
 "122" : "CAN error",
 "123" : "Destination not reachable"]
+
 
