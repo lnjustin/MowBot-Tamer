@@ -19,6 +19,12 @@
  *  v0.0.4 - Added Companion Device; More control over parking conditions during backup window and during forced mowing; Bug fixes
  *  v0.0.5 - Bug fixes
  *  v0.0.6 - Added delay for water sensor; Bug fixes
+ *  v0.0.7 - Bug fixes
+ *  v0.0.8 - Added threshold options for backup window; Bug fixes
+ *  v0.0.9 - Static cutting height
+ *  v0.0.10 - Bug Fixes
+ *  v0.0.11 - Bug Fixes; Added threshold options for forced mowing
+ *  v0.0.12 - Bug Fixes; Enhancements to companion device
 **/
 
 metadata
@@ -28,11 +34,13 @@ metadata
         capability "Switch"
         
         attribute "isInMowingWindow", "boolean"
+        attribute "windowStart", "string"
         attribute "windowEnd", "string"
         
         attribute "lastStartedMowing", "string"
         attribute "lastStoppedMowing", "string"
-        attribute "nextStartTime", "string"
+        attribute "nextMowingStart", "string"
+        attribute "nextMowingStop", "string"
         
         attribute "minsMowedToday", "number" 
         attribute "minsMowedTodayString", "string" 
@@ -71,6 +79,7 @@ metadata
         attribute "pauseFromPresence", "boolean"
         attribute "pauseFromSwitch", "boolean"
         
+        command "updateDeviceNextStart"
     }
 }
 
@@ -89,6 +98,10 @@ def logDebug(msg)
         log.debug(msg)
     }
 }    
+
+def updateDeviceNextStart() {
+    parent.updateDeviceNextStart()    
+}
 
 def on() {
     sendEvent(name: "switch", value: "on")
