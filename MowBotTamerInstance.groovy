@@ -25,6 +25,7 @@
  *  v0.0.10 - Bug Fixes
  *  v0.0.11 - Bug Fixes; Added threshold options for forced mowing
  *  v0.0.12 - Bug Fixes; Enhancements to companion device
+ *  v0.0.13 - More bug fixes
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -744,19 +745,19 @@ def subscribeForParkPause(forcedMowing = false) {
 }
 
 def unsubscribeForParkPause() {
-    unsubscribe(settings["leafWetnessSensor"])
-    unsubscribe(settings["humidityMeasurement"])
+    unsubscribe(settings["leafWetnessSensor"], "leafWetness")
+    unsubscribe(settings["humidityMeasurement"], "humidity")
     // weather, water sensor, and irrigation persistently scheduled since have to track duration after event
 
-    unsubscribe(settings["parkTempSensor"])  
-    unsubscribe(settings["presenceSensors"])
-    unsubscribe(settings["parkSwitches"])
+    unsubscribe(settings["parkTempSensor"], "temperature")  
+    unsubscribe(settings["presenceSensors"], "presence")
+    unsubscribe(settings["parkSwitches"], "switch")
     
-    unsubscribe(settings["pause_motionSensors"])
-    unsubscribe(settings["pauseContactSensors"])
-    unsubscribe(settings["pause_presenceSensors"])
-    unsubscribe(settings["pauseSwitches"])
-    unsubscribe(settings["pauseButtons"])        
+    unsubscribe(settings["pause_motionSensors"], "motion")
+    unsubscribe(settings["pauseContactSensors"], "contact")
+    unsubscribe(settings["pause_presenceSensors"], "presence")
+    unsubscribe(settings["pauseSwitches"], "switch")
+    unsubscribe(settings["pauseButtons"], "pushed")        
 }
 
 def isMowingScheduledForNow(withGracePeriod = false) {
