@@ -399,7 +399,10 @@ def setActivationStatus(status) {
 }
 
 def didActivationStatusChange() {
-    return state.activated != state.lastActivatedStatus ? true : false
+    def didChange = true
+    if (state.lastActivatedStatus == null) didChange = true
+    else didChange = (state.activated == state.lastActivatedStatus) ? false : true
+    return didChange
 }
 
 def updateActivationStatus() {
