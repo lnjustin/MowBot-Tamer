@@ -67,6 +67,7 @@ metadata
         attribute "parkFromWaterSensor", "boolean"
         attribute "parkFromWaterSensorExpires", "string"
         attribute "parkFromSwitch", "boolean"
+        attribute "parkFromGrassWet", "boolean"
         
         attribute "motion", "string"
         attribute "contact", "string"
@@ -78,8 +79,6 @@ metadata
         attribute "pauseFromContact", "boolean"
         attribute "pauseFromPresence", "boolean"
         attribute "pauseFromSwitch", "boolean"
-        
-        command "updateDeviceNextStart"
     }
 }
 
@@ -98,10 +97,6 @@ def logDebug(msg)
         log.debug(msg)
     }
 }    
-
-def updateDeviceNextStart() {
-    parent.updateDeviceNextStart()    
-}
 
 def on() {
     sendEvent(name: "switch", value: "on")

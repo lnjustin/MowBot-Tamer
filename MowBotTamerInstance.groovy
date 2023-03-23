@@ -26,6 +26,9 @@
  *  v0.0.11 - Bug Fixes; Added threshold options for forced mowing
  *  v0.0.12 - Bug Fixes; Enhancements to companion device
  *  v0.0.13 - More bug fixes
+ *  v0.0.14 - Allow negative offset for sunrise/sunset
+ *  v0.0.15 - Bug Fixes
+ *  v0.0.16 - Fixed inactive child apps parking mowers
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -102,14 +105,14 @@ def instancePage() {
                  input name: "startTimeValue", type: "time", title: "Certain Start Time", width: 8, submitOnChange: true
              }
             else if (startTime == "Sunrise" || startTime == "Sunset") {
-                input name: "startTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
+                input name: "startTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true, range: "-300..300"
             }
              input name: "endTime", type: "enum", title: "Mowing Window End Time", options: ["Sunrise", "Sunset", "Certain Time"], submitOnChange: true, width: 4, required: true
              if (endTime == "Certain Time") {
                  input name: "endTimeValue", type: "time", title: "Certain End Time", width: 8, submitOnChange: true
              }
             else if (endTime == "Sunrise" || endTime == "Sunset") {
-                input name: "endTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
+                input name: "endTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true, range: "-300..300"
             }
             input name: "durationType", type: "enum", title: "Mowing Duration", options: ["Full Mowing Window", "Certain Duration"], submitOnChange: true, width: 4, required: true
             paragraph getInterface("note", "A Mowing Duration smaller than the duration of the Full Mowing Window will park the mower(s) once that duration of mowing has been reached, even if the Mowing Window has not expired yet.") 
@@ -224,14 +227,14 @@ def instancePage() {
                         input name: "backupStartTimeValue", type: "time", title: "Certain Start Time", width: 8, submitOnChange: true, required: true
                     }
                     else if (backupStartTime == "Sunrise" || backupStartTime == "Sunset") {
-                        input name: "backupStartTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
+                        input name: "backupStartTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true, range: "-300..300"
                     }
                      input name: "backupEndTime", type: "enum", title: "Backup Mowing Window End Time", options: ["Sunrise", "Sunset", "Certain Time"], submitOnChange: true, width: 4, required: true
                      if (backupEndTime == "Certain Time") {
                          input name: "backupEndTimeValue", type: "time", title: "Certain End Time", width: 8, submitOnChange: true
                      }
                     else if (backupEndTime == "Sunrise" || backupEndTime == "Sunset") {
-                        input name: "backupEndTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true
+                        input name: "backupEndTimeOffset", type: "number", title: "Offset (Mins)", width: 8, submitOnChange: true, range: "-300..300"
                     }                 
                  }
 
@@ -311,6 +314,7 @@ def selectiveUnschedule(unscheduleActivation = false) {
     unschedule(backupWindowPreCheck)
     unschedule(handleExpiredBackupMowingWindow)
     unschedule(park)
+    unschedule(parkPrematurely)
     unschedule(trackTodaysMowing)
     // keep delayed weather, water sensor, and irrigation valve methods scheduled
 }
@@ -365,10 +369,10 @@ def initialize() {
             schedule("01 00 00 ? * *", dateTriggerCheck)
             dateTriggerCheck()           
         }
-        else if (trigger == "Always") state.activated = true
+        else if (trigger == "Always") setActivationStatus(true)
         
     }
-    else if (isDeactivated == true) state.activated = false
+    else if (isDeactivated == true) setActivationStatus(false)
     
     updateActivationStatus()   
 }
@@ -378,27 +382,44 @@ def deleteCompanionDevice()
     deleteChildDevice("MowBotTamerDevice${app.id}")
 }
 
-def updateDeviceData(data) {
+def updateDeviceData(data, updateGrassWet = false) {
     def child = getChildDevice("MowBotTamerDevice${app.id}")  
-    if (child) child.updateData(data)
+    if (child) {
+        child.updateData(data)
+        if (updateGrassWet) {
+            def parkFromGrassWetValue = (state.parkConditions.leafWetness || state.parkConditions.weather || state.parkConditions.humidity || state.parkConditions.valve || state.parkConditions.water) ? true : false    
+            child.updateData([parkFromGrassWet: parkFromGrassWetValue])
+        }
+    }
+}
+
+def setActivationStatus(status) {
+    state.lastActivatedStatus = state.activated
+    state.activated = status
+}
+
+def didActivationStatusChange() {
+    return state.activated != state.lastActivatedStatus ? true : false
 }
 
 def updateActivationStatus() {
     logDebug("updateActivationStatus called at ${now()}")
-    if (state.activated == true) activate() 
-    else if (state.activated == false) deactivate()
+    if (didActivationStatusChange()) {
+        if (isActivated()) activate() 
+        else deactivate()
+    }
 }
 
 def tempTriggerCheck() {
     updateAverageTemp()
     def temp = settings["tempHighLow"] == "High Temp" ? state.averageHigh : state.averageLow
     if (settings["tempDirection"] == "Falls Below") {
-        if (temp < settings["tempThreshold"] && areExceptionsMet() == false) state.activated = true
-        else state.activated = false
+        if (temp < settings["tempThreshold"] && areExceptionsMet() == false) setActivationStatus(true)
+        else setActivationStatus(false)
     }
     else if (settings["tempDirection"] == "Rises Above") {
-        if (temp > settings["tempThreshold"] && areExceptionsMet() == false) state.activated = true
-        else state.activated = false       
+        if (temp > settings["tempThreshold"] && areExceptionsMet() == false) setActivationStatus(true)
+        else setActivationStatus(false)      
     }
     updateActivationStatus()
     
@@ -449,14 +470,14 @@ def switchHandler(value) {
 }
 
 def switchTriggerCheck() {
-    if (state.activationSwitch == "on" && areExceptionsMet() == false) state.activated = true
-    else state.activated = false   
+    if (state.activationSwitch == "on" && areExceptionsMet() == false) setActivationStatus(true)
+    else setActivationStatus(false)  
     updateActivationStatus()
 }
 
 def dateTriggerCheck() {
-    if (isTodayWithinTriggerDates() == true && areExceptionsMet() == false) state.activated = true
-    else state.activated = false
+    if (isTodayWithinTriggerDates() == true && areExceptionsMet() == false) setActivationStatus(true)
+    else setActivationStatus(false)
     updateActivationStatus()
 }
 
@@ -490,6 +511,15 @@ def deactivate() {
     selectiveUnschedule()
 	unsubscribe()        
     parkAll() // no known way to delete schedule from mowers, so park indefinitely
+    
+    if (settings["husqvarnaMowers"]) {
+        for (mower in settings["husqvarnaMowers"]) {
+            def serial = mower.currentValue("serialNumber")
+            state.mowers[serial].userForcingMowing = false
+            state.mowers[serial].parkedByApp = false
+            state.mowers[serial].pausedByApp = false
+        }
+    }
 }
 
 def activate() {
@@ -900,12 +930,13 @@ def scheduleMowers() {
     }
     
     def backupScheduleList = []
+    def backupDuration = null
     if (state.backup && state.backup.isPending == true && state.backup.window != null) {
         def backupStartDate = new Date(state.backup.window.start)
         def backupMidnight = new Date(state.backup.window.start).clearTime()
         def backupEndDate = new Date(state.backup.window.end)
         def backupStart = getMinutesBetweenDates(backupMidnight, backupStartDate)
-        def backupDuration = getMinutesBetweenDates(backupStartDate, backupEndDate)
+        backupDuration = getMinutesBetweenDates(backupStartDate, backupEndDate)
         def dayOfWeek = getDayOfWeek(backupStartDate)
         logDebug("scheduling backup window with backupStartDate = ${backupStartDate}, backupMidnight = ${backupMidnight}, backupEndDate = ${backupEndDate}, day of week = ${dayOfWeek}")
         if (backupStart != null && backupDuration != null && backupStart + backupDuration <= 1440) {
@@ -926,11 +957,37 @@ def scheduleMowers() {
     }
     
     def schedList = primaryScheduleList + backupScheduleList
+    def numTasksPerDay = [monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0, sunday:0]
+    for (sched in schedList) {
+        if (sched["monday"] == true) numTasksPerDay["monday"]++
+        if (sched["tuesday"] == true) numTasksPerDay["tuesday"]++
+        if (sched["wednesday"] == true) numTasksPerDay["wednesday"]++
+        if (sched["thursday"] == true) numTasksPerDay["thursday"]++
+        if (sched["friday"] == true) numTasksPerDay["friday"]++
+        if (sched["saturday"] == true) numTasksPerDay["saturday"]++
+        if (sched["sunday"] == true) numTasksPerDay["sunday"]++            
+    }
+    def maxNumTasksPerDay = 0
+    numTasksPerDay.each { day, num ->
+        if (num > maxNumTasksPerDay) maxNumTasksPerDay = num   
+    }
     if (schedList != []) {
         logDebug("${app.label} scheduling mowers with: ${schedList}")
-        for (mower in settings["husqvarnaMowers"]) { 
-            mower.setSchedule(schedList)
-        } 
+        if (maxNumTasksPerDay <= 2) {
+            for (mower in settings["husqvarnaMowers"]) { 
+                mower.setSchedule(schedList)
+            } 
+            state.backup.manual = false
+            state.backup.manualWindowDuration = null
+        }
+        else if (maxNumTasksPerDay > 2) {
+            logDebug("Schedule List size on at least one day exceeds maximum allowed by API (2). Will implement backup window via manual mowing calls rather than schedule.")    
+            state.backup.manual = true
+            state.backup.manualWindowDuration = backupDuration
+            for (mower in settings["husqvarnaMowers"]) { 
+                mower.setSchedule(primaryScheduleList)
+            }             
+        }
     }
 }
 
@@ -1005,9 +1062,11 @@ def scheduleMowingWindowEnd() {
     def window = getMowingWindow()
     def windowExtension = settings["pollingInterval"].toInteger() + 120
     def postWindowTime = adjustDateBySecs(window.end, windowExtension) // schedule postcheck after mowing end time, corresponding to polling interval, plus 120 seconds, to make sure mower activity updated
-    if (settings["endTime"] == "Sunrise" || settings["endTime"] == "Sunset") {    
-        runOnce(window.end, endMowingWindow)  
-        runOnce(postWindowTime, handleExpiredMowingWindow)  
+    if (settings["endTime"] == "Sunrise" || settings["endTime"] == "Sunset") {   
+        logDebug("Scheduling endMowingWindow() for ${window.end} and handleExpiredMowingWindow() for ${postWindowTime}, overwrite=false")
+        // if window starts on one day and ends on the next day, this schedules the window end for tomorrow, so don't overwrite the window end scheduled yesterday for today 
+        runOnce(window.end, endMowingWindow, [overwrite: false])  
+        runOnce(postWindowTime, handleExpiredMowingWindow, [overwrite: false])  
     }
     else {
         def startDayOfWeek = getDayOfWeek(window.start)
@@ -1082,6 +1141,14 @@ def getShiftedDaysOfWeek() {
 
 def startBackupWindow() {
     state.backup?.inProgress = true
+    if (state.backup?.manual == true) {
+        logDebug("Manually starting mowing for backup window, since was unable to schedule backup")
+        for (mower in settings["husqvarnaMowers"]) { 
+            def serial = mower.currentValue("serialNumber")
+            def minDuration = Math.min(state.backup.manualWindowDuration, msToMins(state.backup.duration))
+            mowOne(serial, minDuration)  
+        }
+    }
     def backupEndDate = new Date(state.backup.window.end)
     def backupStartDate = new Date(state.backup.window.start)
     state.windowEnd = state.backup.window.end
@@ -1100,6 +1167,7 @@ def endBackupWindow() {
         runIn(settings["pollingInterval"], endBackupGracePeriod)
         updateDeviceData([windowEnd: "none"])
         updateDeviceData([windowStart: "none"])
+        updateDeviceData([backupTriggered: false, backupDuration: "none"])
         state.windowEnd = null
         updateDeviceNextStop()
     }
@@ -1244,6 +1312,7 @@ def mowerActivityHandler(evt) {
     
     state.mowers[serial]?.previous.activity = state.mowers[serial]?.current.activity
     state.mowers[serial]?.current.activity = activity
+    state.mowers[serial]?.plannedStopMowingTime = null
     
     if (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING") {
         state.mowers[serial]?.timeStartedMowingToday = activityTime
@@ -1262,6 +1331,7 @@ def mowerActivityHandler(evt) {
         state.mowers[serial]?.timeStartedMowing = activityTime
 
         unschedule(park)
+        unschedule(parkPrematurely)
     
         // If mowing for the full mowing window, mower will park itself according to the schedule. 
         // But if mowing for a duration less than the full mowing window, schedule pre-mature park here
@@ -1274,7 +1344,6 @@ def mowerActivityHandler(evt) {
         if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
             logDebug("Will be finished mowing before end of the mowing window. Scheduling premature park for ${stopByDurationDate}")
             state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
-            updateDeviceNextStop()
             runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
         }
         
@@ -1287,7 +1356,7 @@ def mowerActivityHandler(evt) {
     else if (isMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" ||state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
-        state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
+        if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
         stopForcedMowing(serial)
         
     }
@@ -1297,6 +1366,7 @@ def mowerActivityHandler(evt) {
         state.mowers[serial]?.timeStartedMowing = activityTime
         
         unschedule(park)
+        unschedule(parkPrematurely)
         
         // If mowing for the full mowing window, mower will park itself according to the schedule. 
         // But if mowing for a duration less than the full mowing window, schedule pre-mature park here
@@ -1308,7 +1378,6 @@ def mowerActivityHandler(evt) {
         if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
             runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
             state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
-            updateDeviceNextStop()
         }
         
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
@@ -1319,7 +1388,7 @@ def mowerActivityHandler(evt) {
     else if (isBackupMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isBackupMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
-        state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
+        if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
         stopForcedMowing(serial)
     }
     else if (state.mowers[serial]?.current.activity == "MOWING") {
@@ -1413,17 +1482,18 @@ def handleExpiredBackupMowingWindow() {
         state.mowers[serial].pausedByApp = false    // reset pause status for app
         state.mowers[serial].userForcingMowing = false
     }  
-    state.backup = [:]
-    
-    scheduleMowers()
     
     if (dynamicCuttingHeight) {     
-        requiredDuration = getRequiredMowingDuration()  // replace required duration with the required duration of the primary window
+        requiredDuration = getRequiredMowingDuration()  // replace required duration with the required duration of the primary window        
         def percentWindowMowed = (1 - (maxDurationLeftToMow / requiredDuration)) * 100  // maxDurationLeftToMow reflects the duration left to mow to meet the required duration of the primary window
         def isMissed = percentWindowMowed < getMinPercentWindowSetting() ? true : false  // determine if window would be declared missed when accounting for mowing completed, acorss primary window and backup window
         if (isMissed) incrementMissedWindows()
         else incrementFulfilledWindows()
     }
+    
+    state.backup = [:]
+   
+    scheduleMowers()
     
     if (!anyMowerForcingMowing()) unsubscribeForParkPause()
     
@@ -1436,7 +1506,7 @@ def getMinPercentWindowSetting() {
 
 def incrementMissedWindows() {
     state.consecutiveMissedWindows++   
-    state.consecutiveFulfilleddWindows = 0    
+    state.consecutiveFulfilledWindows = 0    
     if (state.consecutiveMissedWindows == settings["numMissedWindows"]) {
         incrementCuttingHeight()       
         state.consecutiveMissedWindows = 0  // reset state for detecting next
@@ -1445,7 +1515,7 @@ def incrementMissedWindows() {
 
 def incrementFulfilledWindows() {
     state.consecutiveMissedWindows = 0    
-    state.consecutiveFulfilleddWindows++    
+    state.consecutiveFulfilledWindows++    
     if (state.consecutiveFulfilledWindows == settings["numFulfilledWindows"]) {
         decrementCuttingHeight()
         state.consecutiveFulfilledWindows = 0  // reset state for detecting next
@@ -1453,12 +1523,13 @@ def incrementFulfilledWindows() {
 }
 
 def incrementCuttingHeight() {
-    def maxHeight = 9 // max height for currently supported Husqvarna mowers   
-    def setPoint = 0
+    Integer maxHeight = 9 // max height for currently supported Husqvarna mowers   
+    Integer setPoint = 0
     for (mower in settings["husqvarnaMowers"]) { 
-        def currentHeight = mower.currentValue("cuttingHeight")
+        Integer currentHeight = mower.currentValue("cuttingHeight")
         if (currentHeight < 9) {
-            def dynamicHeight = Math.min(maxHeight, currentHeight + settings["numLevelsIncrease"])
+            Integer numLevelIncrease = settings["numLevelsIncrease"]
+            def dynamicHeight = Math.min(maxHeight, (currentHeight + numLevelIncrease)) as Integer
             setPoint = Math.max(dynamicHeight, setPoint)
             mower.setCuttingHeight(dynamicHeight)
             notify("${mower.name} Dynamically Increased Cutting Height up to ${setPoint}", "cuttingHeight")
@@ -1564,7 +1635,7 @@ def getRequiredMowingDurationMins() {
 }
 
 // TO DO: consider buffering mow command if mower is going to the charging station (not sure if can command to mow when in that state)
-def mowOne(serial) {
+def mowOne(serial, duration = null) {
     for (mower in settings["husqvarnaMowers"]) { 
         def serialNum = mower.currentValue("serialNumber")        
         if (serial == serialNum) {
@@ -1576,11 +1647,17 @@ def mowOne(serial) {
                 state.mowers[serialNum]?.parkedByApp = false
                 state.mowers[serialNum]?.pausedByApp = false
                 state.mowers[serialNum]?.userForcingMowing = false
-                mower.resumeSchedule()
-                notify("Mower Serial Num ${serialNum} resuming schedule", "stopStart")
+                if (duration == null) {
+                    mower.resumeSchedule()
+                    notify("Mower Serial Num ${serialNum} resuming schedule", "stopStart")
+                }
+                else {
+                    mower.start(duration)
+                    notify("Mower Serial Num ${serialNum} starting to mow for ${duration} minutes", "stopStart")
+                }
             }
-        }
-        else logDebug("Mow command not sent. Mower either already mowing or requires manual action.")
+            else logDebug("Mow command not sent. Mower either already mowing or requires manual action.")
+        }        
     }  
 }
 
@@ -1710,13 +1787,20 @@ def handleParkConditionChange() {
                updateDeviceNextStart()
                
                def serialNum = mower.currentValue("serialNumber")
-               if (state.mowers[serialNum]?.parkedByApp == true) mowOne(serialNum) // call mowOne if no park conditions met anymore, will resume schedule (if mowing window already over, resuming schedule will park mower anyway)
+               if (state.mowers[serialNum]?.parkedByApp == true) {
+                   if (isBackupMowingScheduledForNow() && state.backup?.manual == true) {
+                       def durationLeftToMow = state.backup.duration - state.mowers[serialNum]?.mowedDurationSoFar
+                       def minDuration = Math.min(state.backup.manualWindowDuration, msToMins(durationLeftToMow))
+                       mowOne(serialNum, minDuration)
+                   }
+                   else mowOne(serialNum) // call mowOne if no park conditions met anymore, will resume schedule (if mowing window already over, resuming schedule will park mower anyway)
+               }
                else logDebug("But not commanding to mow, either because mower is already mowing or because app did not park mower.")
             }
         }
     }
     
-    updateDeviceData([parkFromLeafWetness: state.parkConditions.leafWetness, parkFromWeather: state.parkConditions.weather, parkFromTemp: state.parkConditions.temperature, parkFromHumidity: state.parkConditions.humidity, parkFromValve: state.parkConditions.valve, parkFromPreence: state.parkConditions.presence, parkFromWaterSensor: state.parkConditions.water, parkFromSwitch: state.parkConditions.switchSensors])
+    updateDeviceData([parkFromLeafWetness: state.parkConditions.leafWetness, parkFromWeather: state.parkConditions.weather, parkFromTemp: state.parkConditions.temperature, parkFromHumidity: state.parkConditions.humidity, parkFromValve: state.parkConditions.valve, parkFromPresence: state.parkConditions.presence, parkFromWaterSensor: state.parkConditions.water, parkFromSwitch: state.parkConditions.switchSensors], true)
 }
 
 def temperatureHandler(evt) {
@@ -1766,8 +1850,16 @@ def updateAllParkConditions(backupPrecheck = false) {
         else if (isBackup || backupPrecheck) tempThresh = settings["parkTempThresholdBackup"]
         if (tempThresh) {
             def temp = settings["parkTempSensor"].currentValue("temperature")
-            if (temp >= tempThresh) state.parkConditions.temperature = true
-            else state.parkConditions.temperature = false
+            if (temp >= tempThresh) {
+                state.parkConditions.temperature = true
+                state.temp.numBelow = 0 
+                state.temp.numAbove = settings["parkTempThresholdTimes"]
+            }
+            else {
+                state.parkConditions.temperature = false
+                state.temp.numBelow = settings["parkTempThresholdTimes"]
+                state.temp.numAbove = 0
+            }
         }
     }   
     else state.parkConditions.temperature = false
@@ -1834,7 +1926,7 @@ def updateAllParkConditions(backupPrecheck = false) {
     else if (settings["openWeatherDevice"] == null) state.parkConditions.weather = false
     else if (settings["irrigationValves"] == null) state.parkConditions.valve = null 
         
-    updateDeviceData([parkFromLeafWetness: state.parkConditions.leafWetness, parkFromWeather: state.parkConditions.weather, parkFromTemp: state.parkConditions.temperature, parkFromHumidity: state.parkConditions.humidity, parkFromValve: state.parkConditions.valve, parkFromPreence: state.parkConditions.presence, parkFromWaterSensor: state.parkConditions.water, parkFromSwitch: state.parkConditions.switchSensors])
+    updateDeviceData([parkFromLeafWetness: state.parkConditions.leafWetness, parkFromWeather: state.parkConditions.weather, parkFromTemp: state.parkConditions.temperature, parkFromHumidity: state.parkConditions.humidity, parkFromValve: state.parkConditions.valve, parkFromPresence: state.parkConditions.presence, parkFromWaterSensor: state.parkConditions.water, parkFromSwitch: state.parkConditions.switchSensors], true)
 }
 
 def parkOnPresenceHandler(evt) { 
@@ -1908,10 +2000,16 @@ def openWeatherHandler(evt) {
         handleParkConditionChange()
     }
     else if (state.parkConditions?.weather != null && state.parkConditions.weather == true) {
-      if (settings["weatherWetDuringDay"] == false) runIn(settings["weatherWetDuration"]*60, delayedWeather)
+        def now = new Date()
+        if (settings["weatherWetDuringDay"] == false) {
+            runIn(settings["weatherWetDuration"]*60, delayedWeather)
+            def delayedTime = adjustDateByMins(now, settings["weatherWetDuration"].toInteger())
+            state.parkConditionsExpiration.weather = delayedTime.getTime()
+            updateDeviceData([parkFromWeatherExpires: delayedTime.format("h:mm a")])
+            updateDeviceNextStart()
+        }
         else if (settings["weatherWetDuringDay"] == true) {
-             def dayTime = getSunriseAndSunset()
-             def now = new Date()
+             def dayTime = getSunriseAndSunset()             
              def delayedTime = adjustDateByMins(now, settings["weatherWetDuration"].toInteger())
             if (now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 if (delayedTime.after(dayTime.sunrise) && dayTime.sunset.after(delayedTime)) {
@@ -2025,12 +2123,18 @@ def waterSensorHandler(evt) {
     }
     else if (anyMet == false && state.parkConditions?.water != null && state.parkConditions.water == true) {
         logDebug("Water Sensors all dry now. Scheduling delayed update of park conditions according to settings.")
-        if (settings["waterSensorWetDuringDay"] == false) runIn(settings["waterSensorWetDuration"]*60, delayedWaterSensorEvent)
+        def now = new Date()
+        def wetDuration = settings["waterSensorWetDuration"].toInteger()
+        if (settings["waterSensorWetDuringDay"] == false) {
+            runIn(settings["waterSensorWetDuration"]*60, delayedWaterSensorEvent)
+            def delayedTime = adjustDateByMins(now, wetDuration)
+            state.parkConditionsExpiration.water = delayedTime.getTime()
+            updateDeviceData([parkFromWaterSensorExpires: delayedTime.format("h:mm a")])
+            updateDeviceNextStart()
+        }
         else if (settings["waterSensorWetDuringDay"] == true) {
-             def dayTime = getSunriseAndSunset()
-             def now = new Date()
-             def wetDuration = settings["waterSensorWetDuration"].toInteger()
-             def delayedTime = adjustDateByMins(now, wetDuration)
+            def dayTime = getSunriseAndSunset()                          
+            def delayedTime = adjustDateByMins(now, wetDuration)
             if (now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 if (delayedTime.after(dayTime.sunrise) && dayTime.sunset.after(delayedTime)) {
                     // full delay in the daytime, so just schedule for delayedTime
@@ -2107,11 +2211,17 @@ def irrigationValveHandler(evt) {
     }
     else if (anyOpen == false && state.parkConditions?.valve != null && state.parkConditions.valve == true) {
         logDebug("Irrigation valve(s) all turned off now. Scheduling delayed update of park conditions according to settings.")
-        if (settings["irrigationWetDuringDay"] == false) runIn(settings["irrigationWetDuration"]*60, delayedIrrigationValveClosed)
+        def now = new Date()
+        def wetDuration = settings["irrigationWetDuration"].toInteger()
+        if (settings["irrigationWetDuringDay"] == false) {
+            runIn(settings["irrigationWetDuration"]*60, delayedIrrigationValveClosed)
+            def delayedTime = adjustDateByMins(now, wetDuration)
+            state.parkConditionsExpiration.valve = delayedTime.getTime()
+            updateDeviceData([parkFromValveExpires: delayedTime.format("h:mm a")])
+            updateDeviceNextStart()
+        }
         else if (settings["irrigationWetDuringDay"] == true) {
-             def dayTime = getSunriseAndSunset()
-             def now = new Date()
-             def wetDuration = settings["irrigationWetDuration"].toInteger()
+             def dayTime = getSunriseAndSunset()                          
              def delayedTime = adjustDateByMins(now, wetDuration)
             if (now.after(dayTime.sunrise) && dayTime.sunset.after(now)) {
                 if (delayedTime.after(dayTime.sunrise) && dayTime.sunset.after(delayedTime)) {
@@ -2184,7 +2294,14 @@ def handlePauseConditionChange() {
     else {
        for (mower in settings["husqvarnaMowers"]) { 
           def serialNum = mower.currentValue("serialNumber")
-           if (state.mowers[serialNum].pausedByApp == true) mowOne(serialNum) // call mowOne if no pause conditions met anymore, will resume schedule (if mowing window already over, resuming schedule will park mower anyway)
+           if (state.mowers[serialNum].pausedByApp == true) {
+               if (isBackupMowingScheduledForNow() && state.backup?.manual == true) {
+                   def durationLeftToMow = state.backup.duration - state.mowers[serialNum]?.mowedDurationSoFar
+                   def minDuration = Math.min(state.backup.manualWindowDuration, msToMins(durationLeftToMow))
+                   mowOne(serialNum, minDuration)
+               }
+               else mowOne(serialNum) // call mowOne if no pause conditions met anymore, will resume schedule (if mowing window already over, resuming schedule will park mower anyway)
+           }
         }
     }
     
