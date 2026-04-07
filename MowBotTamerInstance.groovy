@@ -29,6 +29,7 @@
  *  v0.0.14 - Allow negative offset for sunrise/sunset
  *  v0.0.15 - Bug Fixes
  *  v0.0.16 - Fixed inactive child apps parking mowers
+  *  v0.0.17 - Bug fixes for dynamic height, mins mowed
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -92,7 +93,7 @@ def instancePage() {
                  input name: "tempSensor", type: "capability.temperatureMeasurement", title: "Temperature Sensor", submitOnChange:false, width: 4
              }
              else if (trigger == "By Switch") {
-                 paragraph "Trigger MowBot Tamer Instance when the MowBot Tamer Device switch is ON:"
+                 paragraph "Trigger MowBot Tamer Instance when the MowBot Tamer Device child instance switch is ON:"
              }
              input name: "isDeactivated", type: "bool", title: "Manually Deactivate (Overrides Switch)?", defaultValue: false, width: 6
          }
@@ -272,6 +273,7 @@ def instancePage() {
                }
             }
             section (getInterface("header", " Options")) {  
+                input name: "forceActivationReset", type: "bool", title: "Force the app to reset?", width: 12, submitOnChange: false
                 input name: "resetBackup", type: "bool", title: "Clear Any Pending Backup Window?", width: 12, submitOnChange: false
                 input name: "mowDurationTrackingInterval", type: "number", title: "Mowing Duration Tracking Interval (mins)", width: 4, required: true, defaultValue: 15
             }
@@ -337,7 +339,7 @@ def initialize() {
     if (!state.mowingDuration) state.mowingDuration = [history: [], average: 0]
     if (resetBackup) state.backup = [:]    
     if (settings["husqvarnaMowers"]) {
-        if (!state.mowers) state.mowers = [:]
+        if (!state.mowers || forceActivationReset) state.mowers = [:]
         for (mower in settings["husqvarnaMowers"]) {
             def serial = mower.currentValue("serialNumber")
             if (state.mowers[serial] == null) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, mowedDurationToday: 0, timeStartedMowingToday: null, current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false]
@@ -407,10 +409,11 @@ def didActivationStatusChange() {
 
 def updateActivationStatus() {
     logDebug("updateActivationStatus called at ${now()}")
-    if (didActivationStatusChange()) {
+    if (didActivationStatusChange() || forceActivationReset) {
         if (isActivated()) activate() 
         else deactivate()
     }
+    app.updateSetting("forceActivationReset",[value:"false",type:"bool"])
 }
 
 def tempTriggerCheck() {
@@ -511,6 +514,7 @@ def isTodayWithinTriggerDates() {
 }
 
 def deactivate() {
+    logDebug("De-activate called.")
     selectiveUnschedule()
 	unsubscribe()        
     parkAll() // no known way to delete schedule from mowers, so park indefinitely
@@ -660,9 +664,11 @@ def trackTodaysMowing() {
             durationMowed = mower.mowedDurationToday
         }
         if (minDurationMowed == null || durationMowed < minDurationMowed) minDurationMowed = durationMowed
-    }     
-    def minsMowed = msToMins(minDurationMowed)
-    updateDeviceData([minsMowedToday: minsMowed, minsMowedTodayString: formatMinsToTime(minsMowed)]) 
+    }    
+    if (minDurationMowed) {
+        def minsMowed = msToMins(minDurationMowed)
+        updateDeviceData([minsMowedToday: minsMowed, minsMowedTodayString: formatMinsToTime(minsMowed)]) 
+    }
  //   runIn(settings["mowDurationTrackingInterval"]*60, trackTodaysMowing)
 }
 
@@ -1003,10 +1009,21 @@ def startMowingWindow() {
     state.windowEnd = windowEnd.getTime()
     updateDeviceData([isInMowingWindow: true, windowEnd: extractTimeFromDate(windowEnd), windowStart: extractTimeFromDate(windowStart)])
     updateDeviceNextStop()
-    
-    state.mowers.each { serial, mower ->   
-        state.mowers[serial].mowedDurationSoFar = 0 
-    } 
+
+    state.mowers.each { serial, mower ->
+        // If mower is currently mowing when window starts, preserve the current session
+        // by adding elapsed time since session started to mowedDurationSoFar
+        if (state.mowers[serial]?.timeStartedMowing != null) {
+            def now = new Date().getTime()
+            def elapsedDuration = now - state.mowers[serial]?.timeStartedMowing
+            state.mowers[serial].mowedDurationSoFar = elapsedDuration
+            logDebug("Window started while mower already mowing. Preserving ${msToMins(elapsedDuration)} mins of mowing time")
+            // Update timeStartedMowing to current time for accurate tracking going forward
+            state.mowers[serial]?.timeStartedMowing = now
+        } else {
+            state.mowers[serial].mowedDurationSoFar = 0
+        }
+    }
 }
 
 def endMowingWindow() {
@@ -1146,10 +1163,10 @@ def startBackupWindow() {
     state.backup?.inProgress = true
     if (state.backup?.manual == true) {
         logDebug("Manually starting mowing for backup window, since was unable to schedule backup")
-        for (mower in settings["husqvarnaMowers"]) { 
+        for (mower in settings["husqvarnaMowers"]) {
             def serial = mower.currentValue("serialNumber")
             def minDuration = Math.min(state.backup.manualWindowDuration, msToMins(state.backup.duration))
-            mowOne(serial, minDuration)  
+            mowOne(serial, minDuration)
         }
     }
     def backupEndDate = new Date(state.backup.window.end)
@@ -1157,9 +1174,18 @@ def startBackupWindow() {
     state.windowEnd = state.backup.window.end
     updateDeviceData([windowStart: extractTimeFromDate(backupStartDate)])
     updateDeviceData([windowEnd: extractTimeFromDate(backupEndDate)])
-    state.mowers.each { serial, mower ->   
-        state.mowers[serial].mowedDurationSoFar = 0 
-    } 
+    state.mowers.each { serial, mower ->
+        // If mower is currently mowing when backup window starts, preserve the current session
+        if (state.mowers[serial]?.timeStartedMowing != null) {
+            def now = new Date().getTime()
+            def elapsedDuration = now - state.mowers[serial]?.timeStartedMowing
+            state.mowers[serial].mowedDurationSoFar = elapsedDuration
+            logDebug("Backup window started while mower already mowing. Preserving ${msToMins(elapsedDuration)} mins of mowing time")
+            state.mowers[serial]?.timeStartedMowing = now
+        } else {
+            state.mowers[serial].mowedDurationSoFar = 0
+        }
+    }
     updateDeviceNextStop()
 }
 
@@ -1318,38 +1344,47 @@ def mowerActivityHandler(evt) {
     state.mowers[serial]?.plannedStopMowingTime = null
     
     if (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING") {
-        state.mowers[serial]?.timeStartedMowingToday = activityTime
+        // Only set timeStartedMowingToday if not already mowing (prevents overwriting start time on activity updates during continuous mowing)
+        if (state.mowers[serial]?.timeStartedMowingToday == null) {
+            state.mowers[serial]?.timeStartedMowingToday = activityTime
+        }
         updateDeviceData([lastStartedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])
     }
     else if ((state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") {
-        if (state.mowers[serial]?.timeStartedMowingToday != null) state.mowers[serial]?.mowedDurationToday = state.mowers[serial]?.mowedDurationToday + (activityTime - state.mowers[serial]?.timeStartedMowingToday)
-        updateDeviceData([lastStoppedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])     
+        if (state.mowers[serial]?.timeStartedMowingToday != null) {
+            state.mowers[serial]?.mowedDurationToday = state.mowers[serial]?.mowedDurationToday + (activityTime - state.mowers[serial]?.timeStartedMowingToday)
+            state.mowers[serial]?.timeStartedMowingToday = null // Reset so next mowing session can track properly
+        }
+        updateDeviceData([lastStoppedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])
     }
 
     logDebug("mowerActivityHandler: mower previous activity = ${state.mowers[serial]?.previous.activity}. Mower current activity = ${state.mowers[serial]?.current.activity}")
     
     if (isMowingScheduledForNow() && (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING")) {
         logDebug("isMowingScheduledForNow() without cushion is true. Mower started mowing.")
-      // mowing activity occurred during current mowing window. Attribute to current mowing window and count mowing duration toward current mowing window's duration         
-        state.mowers[serial]?.timeStartedMowing = activityTime
+      // mowing activity occurred during current mowing window. Attribute to current mowing window and count mowing duration toward current mowing window's duration
+        // Only set timeStartedMowing if not already set (prevents overwriting during continuous mowing session)
+        if (state.mowers[serial]?.timeStartedMowing == null) {
+            state.mowers[serial]?.timeStartedMowing = activityTime
+        }
 
         unschedule(park)
         unschedule(parkPrematurely)
-    
-        // If mowing for the full mowing window, mower will park itself according to the schedule. 
+
+        // If mowing for the full mowing window, mower will park itself according to the schedule.
         // But if mowing for a duration less than the full mowing window, schedule pre-mature park here
-        // Scheduling this only after mowing has begun during the current mowing window prevents overlapping scheduling when mowing window starts on one day and ends on the next day. That is, only one mowing start call needs to be scheduled at a time and only one mowing end call needs to be scheduled at a time, even if the mowing window straddles midnight     
+        // Scheduling this only after mowing has begun during the current mowing window prevents overlapping scheduling when mowing window starts on one day and ends on the next day. That is, only one mowing start call needs to be scheduled at a time and only one mowing end call needs to be scheduled at a time, even if the mowing window straddles midnight
         def durationLeftToMow = getRequiredMowingDuration() - state.mowers[serial]?.mowedDurationSoFar
         def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
         def stopByDurationDate = new Date(stopByDuration)
         def windowEnd = getNextMowingWindowEnd()
-        logDebug("Started mowing. ${durationLeftToMow} ms left to mow, putting the stopping time at ${stopByDurationDate}. The mowing window ends at ${windowEnd}.")
+        logDebug("Started mowing. ${msToMins(state.mowers[serial]?.mowedDurationSoFar)} mins already mowed. ${msToMins(durationLeftToMow)} mins left to mow, putting the stopping time at ${stopByDurationDate}. The mowing window ends at ${windowEnd}.")
         if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
             logDebug("Will be finished mowing before end of the mowing window. Scheduling premature park for ${stopByDurationDate}")
             state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
             runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
         }
-        
+
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
             // deduce user forced mowing, since mowing started even though this app forced parking
             forceMowing(serial)
@@ -1359,30 +1394,39 @@ def mowerActivityHandler(evt) {
     else if (isMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" ||state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
-        if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
+        if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) {
+            def sessionDuration = state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing
+            state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + sessionDuration
+            logDebug("Mowing session ended. Session duration: ${msToMins(sessionDuration)} mins. Total mowed so far this window: ${msToMins(state.mowers[serial]?.mowedDurationSoFar)} mins")
+            state.mowers[serial]?.timeStartedMowing = null // Reset for next mowing session in window
+        }
         stopForcedMowing(serial)
-        
+
     }
     else if (isBackupMowingScheduledForNow() && (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING")) {
         logDebug("isBackupMowingScheduledForNow() without cushion is true. Mower started mowing.")
-        // mowing activity occurred during backup mowing window. Attribute to backup mowing window and count mowing duration toward current backup mowing window's duration 
-        state.mowers[serial]?.timeStartedMowing = activityTime
-        
+        // mowing activity occurred during backup mowing window. Attribute to backup mowing window and count mowing duration toward current backup mowing window's duration
+        // Only set timeStartedMowing if not already set (prevents overwriting during continuous mowing session)
+        if (state.mowers[serial]?.timeStartedMowing == null) {
+            state.mowers[serial]?.timeStartedMowing = activityTime
+        }
+
         unschedule(park)
         unschedule(parkPrematurely)
-        
-        // If mowing for the full mowing window, mower will park itself according to the schedule. 
+
+        // If mowing for the full mowing window, mower will park itself according to the schedule.
         // But if mowing for a duration less than the full mowing window, schedule pre-mature park here
-        // Scheduling this only after mowing has begun during the current mowing window prevents overlapping scheduling when mowing window starts on one day and ends on the next day. That is, only one mowing start call needs to be scheduled at a time and only one mowing end call needs to be scheduled at a time, even if the mowing window straddles midnight        
+        // Scheduling this only after mowing has begun during the current mowing window prevents overlapping scheduling when mowing window starts on one day and ends on the next day. That is, only one mowing start call needs to be scheduled at a time and only one mowing end call needs to be scheduled at a time, even if the mowing window straddles midnight
         def durationLeftToMow = state.backup.duration - state.mowers[serial]?.mowedDurationSoFar
         def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
         def stopByDurationDate = new Date(stopByDuration)
         def windowEnd = new Date(state.backup.window.end)
+        logDebug("Backup window: ${msToMins(state.mowers[serial]?.mowedDurationSoFar)} mins already mowed. ${msToMins(durationLeftToMow)} mins left to mow")
         if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
             runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
             state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
         }
-        
+
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
             // deduce user forced mowing, since mowing started even though this app forced parking
             forceMowing(serial)
@@ -1391,7 +1435,12 @@ def mowerActivityHandler(evt) {
     else if (isBackupMowingScheduledForNow(true) && (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") { // mower was mowing, but has now stopped mowing. Give grace period for activity having been updated, corresponding to the polling interval
         logDebug("isBackupMowingScheduledForNow() with polling interval cushion is true. Mower stopped mowing.")
         state.mowers[serial]?.timeStoppedMowing = activityTime
-        if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + (state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing)
+        if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) {
+            def sessionDuration = state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing
+            state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + sessionDuration
+            logDebug("Backup mowing session ended. Session duration: ${msToMins(sessionDuration)} mins. Total mowed so far this backup window: ${msToMins(state.mowers[serial]?.mowedDurationSoFar)} mins")
+            state.mowers[serial]?.timeStartedMowing = null // Reset for next mowing session
+        }
         stopForcedMowing(serial)
     }
     else if (state.mowers[serial]?.current.activity == "MOWING") {
@@ -1414,34 +1463,42 @@ def parkPrematurely(data) {
     updateDeviceNextStop()
 }
 
-def handleExpiredMowingWindow() {   
+def handleExpiredMowingWindow() {
     // clean up from current mowing window
     // trigger backup rule if needed
-    
+
     def maxDurationLeftToMow = 0
-    def requiredDuration = getRequiredMowingDuration() 
+    def requiredDuration = getRequiredMowingDuration()
     logDebug("Required mowing duration: ${msToMins(requiredDuration)} mins")
-    state.mowers.each { serial, mower ->   
+    state.mowers.each { serial, mower ->
+        // If mower is still mowing when window expires, finalize the current session
+        if (state.mowers[serial]?.timeStartedMowing != null) {
+            def now = new Date().getTime()
+            def finalSessionDuration = now - state.mowers[serial]?.timeStartedMowing
+            state.mowers[serial].mowedDurationSoFar = state.mowers[serial].mowedDurationSoFar + finalSessionDuration
+            logDebug("Window expired while mower still mowing. Adding final session duration: ${msToMins(finalSessionDuration)} mins")
+        }
+
         def durationLeftToMow = requiredDuration - mower.mowedDurationSoFar
         logDebug("Duration mowed so far: ${msToMins(mower.mowedDurationSoFar)} mins. Duration Left to mow: ${msToMins(durationLeftToMow)} mins")
         if (durationLeftToMow > 0) maxDurationLeftToMow = Math.max(durationLeftToMow, maxDurationLeftToMow)
-        
-        state.mowers[serial].mowedDurationSoFar = 0 
+
+        state.mowers[serial].mowedDurationSoFar = 0
         state.mowers[serial].timeStartedMowing = null
         state.mowers[serial].timeStoppedMowing = null
         state.mowers[serial]?.plannedStopMowingTime = null
-        
+
         if (mower.parkedByApp == true) {  // mower was parked or paused by the app. need to resume schedule for potentially mowing next mowing window
             mowOne(serial)                // call resume schedule so no longer forced to park and can mow according to schedule if mowing conditions later met
-        }    
-        
+        }
+
         // reset these state variables each mowing window
         state.mowers[serial].parkedByApp = false    // reset park status for app
         state.mowers[serial].pausedByApp = false    // reset pause status for app
         state.mowers[serial].userForcingMowing = false
-    }     
+    }
     // give grace period corresponding to the polling interval (Since might have detected mowing late due to polling interval)
-    logDebug("Duration Left To Mow: ${maxDurationLeftToMow} ms, compared to ${settings["pollingInterval"]*1000} ms polling interval")
+    logDebug("Duration Left To Mow: ${msToMins(maxDurationLeftToMow)} mins, compared to ${msToMins(settings["pollingInterval"]*1000)} mins polling interval grace period")
      if (maxDurationLeftToMow > settings["pollingInterval"]*1000) {
          if (addBackupWindow == true) {
              activateBackupWindow(maxDurationLeftToMow)
@@ -1451,7 +1508,7 @@ def handleExpiredMowingWindow() {
              notify("${app.label} Mowing Deficiency: ${msToMins(maxDurationLeftToMow)} mins mowing missed.", "backupRule")
          }
     }
-    if (settings["cuttingHeightSetting"] == "Dynamic") {           
+    if (settings["cuttingHeightSetting"] == "Dynamic") {
         if (addBackupWindow == false) {
             // update height state if there is no backup window. If there is a backup window, wait until the backup window to determine whether the window is missed
             def percentWindowMowed = (1 - (maxDurationLeftToMow / requiredDuration)) * 100  // maxDurationLeftToMow reflects the duration left to mow to meet the required duration
@@ -1460,7 +1517,7 @@ def handleExpiredMowingWindow() {
             else incrementFulfilledWindows()
         }
     }
-    
+
     if (!anyMowerForcingMowing()) unsubscribeForParkPause()
 }
 
@@ -1541,12 +1598,13 @@ def incrementCuttingHeight() {
 }
 
 def decrementCuttingHeight() {
-    def minHeight = settings["dynamicCuttingHeight"]
-    def setPoint = 10
+    Integer minHeight = settings["dynamicCuttingHeight"]
+    Integer setPoint = 10
     for (mower in settings["husqvarnaMowers"]) { 
-        def currentHeight = mower.currentValue("cuttingHeight")       
+        Integer currentHeight = mower.currentValue("cuttingHeight")    
+        Integer levelChange = settings["numLevelsDecrease"]   
         if (currentHeight > minHeight) {
-            def dynamicHeight = Math.max(minHeight, currentHeight - settings["numLevelsDecrease"])
+            Integer dynamicHeight = Math.max(minHeight, currentHeight - levelChange) as Integer
             setPoint = Math.min(dynamicHeight, setPoint)
             mower.setCuttingHeight(dynamicHeight)
             notify("${mower.name} Dynamically Decreased Cutting Height up to ${setPoint}", "cuttingHeight")
