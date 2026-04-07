@@ -1524,39 +1524,48 @@ def handleExpiredMowingWindow() {
 def handleExpiredBackupMowingWindow() {
     def maxDurationLeftToMow = 0
     def requiredDuration = state.backup.duration
-    state.mowers.each { serial, mower ->   
+    state.mowers.each { serial, mower ->
+        // If mower is still mowing when backup window expires, finalize the current session
+        if (state.mowers[serial]?.timeStartedMowing != null) {
+            def now = new Date().getTime()
+            def finalSessionDuration = now - state.mowers[serial]?.timeStartedMowing
+            state.mowers[serial].mowedDurationSoFar = state.mowers[serial].mowedDurationSoFar + finalSessionDuration
+            logDebug("Backup window expired while mower still mowing. Adding final session duration: ${msToMins(finalSessionDuration)} mins")
+        }
+
         def durationLeftToMow = requiredDuration - mower.mowedDurationSoFar
+        logDebug("Backup window: Duration mowed: ${msToMins(mower.mowedDurationSoFar)} mins. Duration left: ${msToMins(durationLeftToMow)} mins")
         if (durationLeftToMow > 0) maxDurationLeftToMow = Math.max(durationLeftToMow, maxDurationLeftToMow)
-        
-        state.mowers[serial].mowedDurationSoFar = 0 
+
+        state.mowers[serial].mowedDurationSoFar = 0
         state.mowers[serial].timeStartedMowing = null
         state.mowers[serial].timeStoppedMowing = null
         state.mowers[serial]?.plannedStopMowingTime = null
-        
+
         if (mower.parkedByApp == true) {  // mower was parked or paused by the app. need to resume schedule for potentially mowing next mowing window
             mowOne(serial)                // call resume schedule so no longer forced to park and can mow according to schedule if mowing conditions later met
         }
-        
+
         // reset these state variables each mowing window
         state.mowers[serial].parkedByApp = false    // reset park status for app
         state.mowers[serial].pausedByApp = false    // reset pause status for app
         state.mowers[serial].userForcingMowing = false
-    }  
-    
-    if (dynamicCuttingHeight) {     
-        requiredDuration = getRequiredMowingDuration()  // replace required duration with the required duration of the primary window        
+    }
+
+    if (dynamicCuttingHeight) {
+        requiredDuration = getRequiredMowingDuration()  // replace required duration with the required duration of the primary window
         def percentWindowMowed = (1 - (maxDurationLeftToMow / requiredDuration)) * 100  // maxDurationLeftToMow reflects the duration left to mow to meet the required duration of the primary window
-        def isMissed = percentWindowMowed < getMinPercentWindowSetting() ? true : false  // determine if window would be declared missed when accounting for mowing completed, acorss primary window and backup window
+        def isMissed = percentWindowMowed < getMinPercentWindowSetting() ? true : false  // determine if window would be declared missed when accounting for mowing completed, across primary window and backup window
         if (isMissed) incrementMissedWindows()
         else incrementFulfilledWindows()
     }
-    
+
     state.backup = [:]
-   
+
     scheduleMowers()
-    
+
     if (!anyMowerForcingMowing()) unsubscribeForParkPause()
-    
+
     updateDeviceData([backupTriggered: false, backupDuration: "none"])
 }
 
