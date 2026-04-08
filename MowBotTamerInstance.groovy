@@ -640,13 +640,19 @@ def activate() {
     updateDeviceNextStop()
 }
 
-def resetTodaysMowing() {     
-    state.mowers.each { serial, mower ->   
+def resetTodaysMowing() {
+    logDebug("Resetting today's mowing at start of new day")
+    state.mowers.each { serial, mower ->
         mower.mowedDurationToday = 0
         def now = new Date().getTime()
         def isMowing = isMowerMowing(serial)
         mower.timeStartedMowingToday = isMowing ? now : null
-    }   
+    }
+    // Update device with reset values immediately so UI shows current data
+    updateDeviceData([minsMowedToday: 0, minsMowedTodayString: formatMinsToTime(0)])
+    // Also update next start/stop in case they changed with new day
+    updateDeviceNextStart()
+    updateDeviceNextStop()
 }
 
 def trackTodaysMowing() {
