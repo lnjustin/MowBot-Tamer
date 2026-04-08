@@ -1030,6 +1030,22 @@ def startMowingWindow() {
             state.mowers[serial].mowedDurationSoFar = 0
         }
     }
+
+    // Update park conditions and subscribe to park/pause sensors when window starts
+    updateAllParkConditions()
+    updateAllPauseConditions()
+    subscribeForParkPause()
+
+    // Check if park conditions are already met when window starts
+    if (isAnyParkConditionMet()) {
+        logDebug("Park conditions already met when mowing window started")
+        for (mower in settings["husqvarnaMowers"]) {
+            def serialNum = mower.currentValue("serialNumber")
+            if (state.mowers[serialNum]?.userForcingMowing == false) {
+                parkOne(serialNum, true)
+            }
+        }
+    }
 }
 
 def endMowingWindow() {
@@ -1193,6 +1209,22 @@ def startBackupWindow() {
         }
     }
     updateDeviceNextStop()
+
+    // Update park conditions and subscribe to park/pause sensors when backup window starts
+    updateAllParkConditions(true)
+    updateAllPauseConditions()
+    subscribeForParkPause()
+
+    // Check if park conditions are already met when backup window starts
+    if (isAnyParkConditionMet(true)) {
+        logDebug("Park conditions already met when backup window started")
+        for (mower in settings["husqvarnaMowers"]) {
+            def serialNum = mower.currentValue("serialNumber")
+            if (state.mowers[serialNum]?.userForcingMowing == false) {
+                parkOne(serialNum, true)
+            }
+        }
+    }
 }
 
 def endBackupWindow() {
