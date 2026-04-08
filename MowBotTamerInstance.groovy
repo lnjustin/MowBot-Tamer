@@ -1525,6 +1525,10 @@ def handleExpiredMowingWindow() {
     }
 
     if (!anyMowerForcingMowing()) unsubscribeForParkPause()
+
+    // Update device with latest next start/stop times after window expires
+    updateDeviceNextStart()
+    updateDeviceNextStop()
 }
 
 def handleExpiredBackupMowingWindow() {
@@ -1573,6 +1577,10 @@ def handleExpiredBackupMowingWindow() {
     if (!anyMowerForcingMowing()) unsubscribeForParkPause()
 
     updateDeviceData([backupTriggered: false, backupDuration: "none"])
+
+    // Update device with latest next start/stop times after backup window expires
+    updateDeviceNextStart()
+    updateDeviceNextStop()
 }
 
 def getMinPercentWindowSetting() {
@@ -1712,8 +1720,9 @@ def getRequiredMowingDurationMins() {
 
 // TO DO: consider buffering mow command if mower is going to the charging station (not sure if can command to mow when in that state)
 def mowOne(serial, duration = null) {
-    for (mower in settings["husqvarnaMowers"]) { 
-        def serialNum = mower.currentValue("serialNumber")        
+    def didMow = false
+    for (mower in settings["husqvarnaMowers"]) {
+        def serialNum = mower.currentValue("serialNumber")
         if (serial == serialNum) {
             logDebug("${app.label} mowOne() executing")
             def isMowing = (mower.currentValue("mowerActivity") == "MOWING" || mower.currentValue("LEAVING") == true) ? true : false
@@ -1731,14 +1740,20 @@ def mowOne(serial, duration = null) {
                     mower.start(duration)
                     notify("Mower Serial Num ${serialNum} starting to mow for ${duration} minutes", "stopStart")
                 }
+                didMow = true
             }
             else logDebug("Mow command not sent. Mower either already mowing or requires manual action.")
-        }        
-    }  
+        }
+    }
+    if (didMow) {
+        updateDeviceNextStart()
+        updateDeviceNextStop()
+    }
 }
 
 def parkAll(preCheckPark = false) {
-    for (mower in settings["husqvarnaMowers"]) { 
+    def anyParked = false
+    for (mower in settings["husqvarnaMowers"]) {
         def mowerState = mower.currentValue("mowerState")
         def serialNum = mower.currentValue("serialNumber")
         if (state.mowers[serialNum]?.parkedByApp == false) { // avoids sending duplicate commands
@@ -1750,16 +1765,22 @@ def parkAll(preCheckPark = false) {
                 state.mowers[serialNum]?.pausedByApp = false
                 state.mowers[serialNum]?.userForcingMowing = false
                 mower.parkindefinite()
-                notify("${app.label} Mowing Stopped", "stopStart")            
+                notify("${app.label} Mowing Stopped", "stopStart")
+                anyParked = true
             }
             else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
         }
         else logDebug("Park command not sent. Mower already parked by app.")
-    }     
+    }
+    if (anyParked) {
+        updateDeviceNextStart()
+        updateDeviceNextStop()
+    }
 }
 
 def parkOne(serial, preCheckPark = false) {
-    for (mower in settings["husqvarnaMowers"]) { 
+    def didPark = false
+    for (mower in settings["husqvarnaMowers"]) {
         def serialNum = mower.currentValue("serialNumber")
        if (serial == serialNum) {
            def mowerState = mower.currentValue("mowerState")
@@ -1775,12 +1796,17 @@ def parkOne(serial, preCheckPark = false) {
                    state.mowers[serialNum]?.userForcingMowing = false
                    mower.parkindefinite()
                    notify("${app.label} Mowing Stopped", "stopStart")
+                   didPark = true
                }
                else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
             }
            else logDebug("Park command not sent. Mower already parked by app.")
        }
-    }     
+    }
+    if (didPark) {
+        updateDeviceNextStart()
+        updateDeviceNextStop()
+    }
 }
 
 def park(data) {
@@ -1789,12 +1815,13 @@ def park(data) {
 }
 
 def pauseOne(serial) {
-    for (mower in settings["husqvarnaMowers"]) { 
+    def didPause = false
+    for (mower in settings["husqvarnaMowers"]) {
         def serialNum = mower.currentValue("serialNumber")
         if (serial == serialNum) {
             if (state.mowers[serialNum]?.pausedByApp == false) {
                 def isPaused = mower.currentValue("mowerState") == "PAUSED" ? true : false
-                def isParked = (mower.currentValue("mowerActivity") == "PARKED_IN_CS" || mower.currentValue("mowerActivity") == "CHARGING" || mower.currentValue("parked") == true) ? true : false           
+                def isParked = (mower.currentValue("mowerActivity") == "PARKED_IN_CS" || mower.currentValue("mowerActivity") == "CHARGING" || mower.currentValue("parked") == true) ? true : false
                 def requiresManualAction =  (mower.currentValue("mowerActivity") == "STOPPED_IN_GARDEN" || mower.currentValue("mowerActivity") == "NOT_APPLICABLE") ? true : false
                 if (!isPaused && !isParked && !requiresManualAction) {
                     state.mowers[serialNum]?.parkedByApp = false
@@ -1802,11 +1829,16 @@ def pauseOne(serial) {
                     state.mowers[serialNum]?.userForcingMowing = false
                     mower.pause()
                     notify("${app.label} Mowing Paused", "stopStart")
+                    didPause = true
                 }
             }
             else logDebug("Pause command not sent. Mower either already paused, is parked, or requires manual action.")
         }
-    }     
+    }
+    if (didPause) {
+        updateDeviceNextStart()
+        updateDeviceNextStop()
+    }
 }
 
 def isAnyParkConditionMet(backupPrecheck = false) {
