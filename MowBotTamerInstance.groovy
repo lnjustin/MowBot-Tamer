@@ -29,7 +29,8 @@
  *  v0.0.14 - Allow negative offset for sunrise/sunset
  *  v0.0.15 - Bug Fixes
  *  v0.0.16 - Fixed inactive child apps parking mowers
-  *  v0.0.17 - Bug fixes for dynamic height, mins mowed
+ *  v0.0.17 - Bug fixes for dynamic height, mins mowed
+ *  v0.0.18 - Added running averages for full mowing and charging cycles
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
@@ -276,6 +277,7 @@ def instancePage() {
                 input name: "forceActivationReset", type: "bool", title: "Force the app to reset?", width: 12, submitOnChange: false
                 input name: "resetBackup", type: "bool", title: "Clear Any Pending Backup Window?", width: 12, submitOnChange: false
                 input name: "mowDurationTrackingInterval", type: "number", title: "Mowing Duration Tracking Interval (mins)", width: 4, required: true, defaultValue: 15
+                input name: "fullCycleBatteryThreshold", type: "number", title: "Minimum Battery % Drained for Full Cycle Averages", width: 4, required: true, defaultValue: 30, range: "0..100"
             }
             section("") {                    
                 footer()   
@@ -337,15 +339,19 @@ def initialize() {
     if (!state.consecutiveFulfilledWindows) state.consecutiveFulfilledWindows = 0 
     if (!state.apiConnectionLost) state.apiConnectionLost = [:]
     if (!state.mowingDuration) state.mowingDuration = [history: [], average: 0]
+    if (!state.fullCycleAverages) state.fullCycleAverages = [chargeCycleCount: 0, chargeCycleAverageMs: 0L, mowingSessionCount: 0, mowingSessionAverageMs: 0L]
     if (resetBackup) state.backup = [:]    
     if (settings["husqvarnaMowers"]) {
         if (!state.mowers || forceActivationReset) state.mowers = [:]
         for (mower in settings["husqvarnaMowers"]) {
             def serial = mower.currentValue("serialNumber")
-            if (state.mowers[serial] == null) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, mowedDurationToday: 0, timeStartedMowingToday: null, timeStartedParkedToday: null, timeStartedChargingToday: null, timeStartedRestrictedToday: null, parkedDurationToday: 0, chargingDurationToday: 0, restrictedDurationToday: 0, parkEventsToday: 0, parkReasons: [:], current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false]
+            if (state.mowers[serial] == null) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, mowedDurationToday: 0, timeStartedMowingToday: null, timeStartedParkedToday: null, timeStartedChargingToday: null, timeStartedRestrictedToday: null, parkedDurationToday: 0, chargingDurationToday: 0, restrictedDurationToday: 0, parkEventsToday: 0, parkReasons: [:], current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false, fullMowingSessionStartTime: null, fullChargeCycleStartTime: null, fullChargeCycleStartBattery: null]
             state.mowers[serial].userForcingMowing = false
             state.mowers[serial].parkedByApp = false
             state.mowers[serial].pausedByApp = false
+            if (!state.mowers[serial].containsKey("fullMowingSessionStartTime")) state.mowers[serial].fullMowingSessionStartTime = null
+            if (!state.mowers[serial].containsKey("fullChargeCycleStartTime")) state.mowers[serial].fullChargeCycleStartTime = null
+            if (!state.mowers[serial].containsKey("fullChargeCycleStartBattery")) state.mowers[serial].fullChargeCycleStartBattery = null
         }
     }
 
@@ -376,6 +382,7 @@ def initialize() {
     }
     else if (isDeactivated == true) setActivationStatus(false)
     
+    updateFullCycleAverageDeviceData()
     updateActivationStatus()   
 }
 
@@ -392,6 +399,58 @@ def updateDeviceData(data, updateGrassWet = false) {
             def parkFromGrassWetValue = (state.parkConditions.leafWetness || state.parkConditions.weather || state.parkConditions.humidity || state.parkConditions.valve || state.parkConditions.water) ? true : false    
             child.updateData([parkFromGrassWet: parkFromGrassWetValue])
         }
+    }
+}
+
+def updateFullCycleAverageDeviceData() {
+    def chargeAvgMins = msToMins(state.fullCycleAverages?.chargeCycleAverageMs ?: 0)
+    def mowingAvgMins = msToMins(state.fullCycleAverages?.mowingSessionAverageMs ?: 0)
+    def hasChargeAvg = (state.fullCycleAverages?.chargeCycleCount ?: 0) > 0
+    def hasMowingAvg = (state.fullCycleAverages?.mowingSessionCount ?: 0) > 0
+    updateDeviceData([
+        avgFullChargeCycleMins: hasChargeAvg ? chargeAvgMins : 0,
+        avgFullChargeCycleString: hasChargeAvg ? formatMinsToTime(chargeAvgMins) : "none",
+        avgFullMowingSessionMins: hasMowingAvg ? mowingAvgMins : 0,
+        avgFullMowingSessionString: hasMowingAvg ? formatMinsToTime(mowingAvgMins) : "none"
+    ])
+}
+
+def recordRunningAverage(metricKey, durationMs) {
+    if (durationMs == null || durationMs <= 0) return
+
+    def countKey = "${metricKey}Count"
+    def averageKey = "${metricKey}AverageMs"
+    def priorCount = state.fullCycleAverages[countKey] ?: 0
+    def priorAverage = state.fullCycleAverages[averageKey] ?: 0L
+    def newCount = priorCount + 1
+    def newAverage = Math.round(((priorAverage as Long) * priorCount + (durationMs as Long)) / newCount)
+
+    state.fullCycleAverages[countKey] = newCount
+    state.fullCycleAverages[averageKey] = newAverage
+    updateFullCycleAverageDeviceData()
+}
+
+def getFullCycleBatteryThreshold() {
+    return settings["fullCycleBatteryThreshold"] != null ? settings["fullCycleBatteryThreshold"].toInteger() : 30
+}
+
+def getBatteryLevelForMower(mower) {
+    def batteryValue = mower?.currentValue("battery")
+    if (batteryValue == null) return null
+    try {
+        return batteryValue.toString().replace("%", "").toBigDecimal().intValue()
+    }
+    catch (Exception ex) {
+        log.warn("Unable to parse battery value '${batteryValue}' for ${mower?.displayName ?: mower}")
+        return null
+    }
+}
+
+def clearFullCycleTracking(serial, clearMowingSession = true, clearChargeCycle = true) {
+    if (clearMowingSession) state.mowers[serial].fullMowingSessionStartTime = null
+    if (clearChargeCycle) {
+        state.mowers[serial].fullChargeCycleStartTime = null
+        state.mowers[serial].fullChargeCycleStartBattery = null
     }
 }
 
@@ -1466,10 +1525,14 @@ def mowerActivityHandler(evt) {
     state.mowers[serial]?.plannedStopMowingTime = null
 
     // Track parking/charging state transitions
+    def wasMowing = (state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING")
+    def isMowing = (activity == "MOWING" || activity == "LEAVING")
     def wasParked = (state.mowers[serial]?.previous.activity == "PARKED_IN_CS" || state.mowers[serial]?.previous.activity == "GOING_HOME")
     def isParked = (activity == "PARKED_IN_CS" || activity == "GOING_HOME")
     def wasCharging = (state.mowers[serial]?.previous.activity == "CHARGING")
     def isCharging = (activity == "CHARGING")
+    def batteryLevel = getBatteryLevelForMower(mower)
+    def fullCycleBatteryThreshold = getFullCycleBatteryThreshold()
 
     if (isParked && !wasParked) {
         // Mower just parked
@@ -1484,25 +1547,52 @@ def mowerActivityHandler(evt) {
     if (isCharging && !wasCharging) {
         // Mower started charging
         state.mowers[serial]?.timeStartedChargingToday = activityTime
+
+        def qualifiesAsLowBatteryCycle = (batteryLevel != null && batteryLevel <= fullCycleBatteryThreshold)
+        if (qualifiesAsLowBatteryCycle && state.mowers[serial]?.fullMowingSessionStartTime != null && state.mowers[serial]?.parkedByApp != true && state.mowers[serial]?.pausedByApp != true) {
+            def fullMowingSessionDuration = activityTime - state.mowers[serial]?.fullMowingSessionStartTime
+            logDebug("Full mowing session ended on recharge. Session duration: ${msToMins(fullMowingSessionDuration)} mins at battery ${batteryLevel}%")
+            recordRunningAverage("mowingSession", fullMowingSessionDuration)
+            clearFullCycleTracking(serial, true, false)
+            state.mowers[serial]?.fullChargeCycleStartTime = activityTime
+            state.mowers[serial]?.fullChargeCycleStartBattery = batteryLevel
+        }
+        else {
+            clearFullCycleTracking(serial, true, true)
+        }
     }
     else if (!isCharging && wasCharging && state.mowers[serial]?.timeStartedChargingToday != null) {
         // Mower stopped charging
         state.mowers[serial]?.chargingDurationToday = state.mowers[serial]?.chargingDurationToday + (activityTime - state.mowers[serial]?.timeStartedChargingToday)
         state.mowers[serial]?.timeStartedChargingToday = null
+
+        if (state.mowers[serial]?.fullChargeCycleStartTime != null) {
+            def fullChargeCycleDuration = activityTime - state.mowers[serial]?.fullChargeCycleStartTime
+            logDebug("Full charging cycle completed. Charge duration: ${msToMins(fullChargeCycleDuration)} mins from ${state.mowers[serial]?.fullChargeCycleStartBattery}% battery")
+            recordRunningAverage("chargeCycle", fullChargeCycleDuration)
+        }
+        clearFullCycleTracking(serial, false, true)
     }
 
-    if (state.mowers[serial]?.current.activity == "MOWING" || state.mowers[serial]?.current.activity == "LEAVING") {
+    if (isMowing) {
         // Only set timeStartedMowingToday if not already mowing (prevents overwriting start time on activity updates during continuous mowing)
         if (state.mowers[serial]?.timeStartedMowingToday == null) {
             state.mowers[serial]?.timeStartedMowingToday = activityTime
         }
+        if (!wasMowing && wasParked && !wasCharging && state.mowers[serial]?.fullMowingSessionStartTime != null) {
+            clearFullCycleTracking(serial, true, false)
+        }
+        if (!wasMowing && state.mowers[serial]?.fullMowingSessionStartTime == null) {
+            state.mowers[serial]?.fullMowingSessionStartTime = activityTime
+        }
         updateDeviceData([lastStartedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])
     }
-    else if ((state.mowers[serial]?.previous.activity == "MOWING" || state.mowers[serial]?.previous.activity == "LEAVING") && state.mowers[serial]?.current.activity != "MOWING") {
+    else if (wasMowing && !isMowing) {
         if (state.mowers[serial]?.timeStartedMowingToday != null) {
             state.mowers[serial]?.mowedDurationToday = state.mowers[serial]?.mowedDurationToday + (activityTime - state.mowers[serial]?.timeStartedMowingToday)
             state.mowers[serial]?.timeStartedMowingToday = null // Reset so next mowing session can track properly
         }
+        if (!isCharging && !isParked) clearFullCycleTracking(serial, true, false)
         updateDeviceData([lastStoppedMowing: extractTimeFromDate(evt.getDate(), location.timeZone)])
     }
 
@@ -2988,4 +3078,3 @@ def getInterface(type, txt="", link="") {
 "121" : "High internal temerature",
 "122" : "CAN error",
 "123" : "Destination not reachable"]
-

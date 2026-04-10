@@ -25,6 +25,7 @@
  *  v0.0.10 - Bug Fixes
  *  v0.0.11 - Bug Fixes; Added threshold options for forced mowing
  *  v0.0.12 - Bug Fixes; Enhancements to companion device
+ *  v0.0.13 - Added running averages for full mowing and charging cycles
 **/
 
 metadata
@@ -49,6 +50,10 @@ metadata
         attribute "minsChargingToday", "number"
         attribute "minsRestrictedToday", "number"
         attribute "parkEventsToday", "number"
+        attribute "avgFullChargeCycleMins", "number"
+        attribute "avgFullChargeCycleString", "string"
+        attribute "avgFullMowingSessionMins", "number"
+        attribute "avgFullMowingSessionString", "string"
         
         attribute "backupTriggered", "boolean" 
         attribute "backupDuration", "number" 
