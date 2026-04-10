@@ -43,7 +43,12 @@ metadata
         attribute "nextMowingStop", "string"
         
         attribute "minsMowedToday", "number" 
-        attribute "minsMowedTodayString", "string" 
+        attribute "minsMowedTodayString", "string"
+
+        attribute "minsParkedToday", "number"
+        attribute "minsChargingToday", "number"
+        attribute "minsRestrictedToday", "number"
+        attribute "parkEventsToday", "number"
         
         attribute "backupTriggered", "boolean" 
         attribute "backupDuration", "number" 
