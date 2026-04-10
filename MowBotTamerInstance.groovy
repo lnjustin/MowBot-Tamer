@@ -339,6 +339,9 @@ def initialize() {
     if (!state.consecutiveFulfilledWindows) state.consecutiveFulfilledWindows = 0 
     if (!state.apiConnectionLost) state.apiConnectionLost = [:]
     if (!state.mowingDuration) state.mowingDuration = [history: [], average: 0]
+    if (!state.temp) state.temp = [:]
+    if (!state.humidity) state.humidity = [:]
+    if (!state.leafWetness) state.leafWetness = [:]
     if (!state.fullCycleAverages) state.fullCycleAverages = [chargeCycleCount: 0, chargeCycleAverageMs: 0L, mowingSessionCount: 0, mowingSessionAverageMs: 0L]
     if (resetBackup) state.backup = [:]    
     if (settings["husqvarnaMowers"]) {
@@ -382,8 +385,8 @@ def initialize() {
     }
     else if (isDeactivated == true) setActivationStatus(false)
     
-    updateFullCycleAverageDeviceData()
-    updateActivationStatus()   
+    updateActivationStatus()
+    refreshCompanionDeviceData()
 }
 
 def deleteCompanionDevice()
@@ -400,6 +403,88 @@ def updateDeviceData(data, updateGrassWet = false) {
             child.updateData([parkFromGrassWet: parkFromGrassWetValue])
         }
     }
+}
+
+def getCompanionAttrValue(attrName, defaultValue = null) {
+    def child = getChildDevice("MowBotTamerDevice${app.id}")
+    def value = child?.currentValue(attrName)
+    return value != null ? value : defaultValue
+}
+
+def getConditionStatus(conditionState, configured, thresholdTimes, attrName) {
+    if (!configured) return getCompanionAttrValue(attrName, "Below")
+
+    def aboveCount = conditionState?.numAbove ?: 0
+    def belowCount = conditionState?.numBelow ?: 0
+    def threshold = thresholdTimes ?: 0
+
+    if (threshold > 0 && aboveCount >= threshold) return "Above"
+    if (aboveCount > 0) return "Transitioning Above"
+    if (threshold > 0 && belowCount >= threshold) return "Below"
+    if (belowCount > 0) return "Transitioning Below"
+    return "Below"
+}
+
+def refreshCompanionDeviceData() {
+    def child = getChildDevice("MowBotTamerDevice${app.id}")
+    if (!child) return
+
+    updateAllParkConditions()
+    updateAllPauseConditions()
+    trackTodaysMowing()
+
+    def currentWindowStart = getCurrentWindowStartTime()
+    def isWindowActive = (state.isInMowingWindow == true || state.backup?.inProgress == true)
+
+    def anyParkedByApp = false
+    def anyPausedByApp = false
+    def anyForcingMowing = false
+    state.mowers?.each { serial, mower ->
+        if (mower?.parkedByApp == true) anyParkedByApp = true
+        if (mower?.pausedByApp == true) anyPausedByApp = true
+        if (mower?.userForcingMowing == true) anyForcingMowing = true
+    }
+
+    updateDeviceData([
+        switch: child.currentValue("switch") ?: "on",
+        isInMowingWindow: isWindowActive,
+        windowStart: (isWindowActive && currentWindowStart != null) ? extractTimeFromDate(new Date(currentWindowStart)) : "none",
+        windowEnd: state.windowEnd != null ? extractTimeFromDate(new Date(state.windowEnd)) : "none",
+        lastStartedMowing: getCompanionAttrValue("lastStartedMowing", "none"),
+        lastStoppedMowing: getCompanionAttrValue("lastStoppedMowing", "none"),
+        backupTriggered: state.backup?.isPending == true,
+        backupDuration: state.backup?.duration != null ? msToMins(state.backup.duration) : "none",
+        forcingPark: anyParkedByApp,
+        forcingPause: anyPausedByApp,
+        forcingMowing: anyForcingMowing,
+        temperatureStatus: getConditionStatus(state.temp, settings["parkWhenTempHot"] && settings["parkTempSensor"], settings["parkTempThresholdTimes"], "temperatureStatus"),
+        leafWetnessStatus: getConditionStatus(state.leafWetness, settings["parkWhenGrassWet"] && settings["leafWetnessSensor"], settings["leafWetnessThresholdTimes"], "leafWetnessStatus"),
+        humidityStatus: getConditionStatus(state.humidity, settings["parkWhenGrassWet"] && settings["humidityMeasurement"], settings["humidityThresholdTimes"], "humidityStatus"),
+        parkFromLeafWetness: state.parkConditions?.leafWetness ?: false,
+        parkFromWeather: state.parkConditions?.weather ?: false,
+        parkFromWeatherExpires: state.parkConditionsExpiration?.weather != null ? extractTimeFromDate(new Date(state.parkConditionsExpiration.weather)) : "none",
+        parkFromTemp: state.parkConditions?.temperature ?: false,
+        parkFromHumidity: state.parkConditions?.humidity ?: false,
+        parkFromValve: state.parkConditions?.valve ?: false,
+        parkFromValveExpires: state.parkConditionsExpiration?.valve != null ? extractTimeFromDate(new Date(state.parkConditionsExpiration.valve)) : "none",
+        parkFromPresence: state.parkConditions?.presence ?: false,
+        parkFromWaterSensor: state.parkConditions?.water ?: false,
+        parkFromWaterSensorExpires: state.parkConditionsExpiration?.water != null ? extractTimeFromDate(new Date(state.parkConditionsExpiration.water)) : "none",
+        parkFromSwitch: state.parkConditions?.switchSensors ?: false,
+        pauseFromButton: state.pauseConditions?.button ?: false,
+        pauseFromMotion: state.pauseConditions?.motion ?: false,
+        pauseFromContact: state.pauseConditions?.contact ?: false,
+        pauseFromPresence: state.pauseConditions?.presence ?: false,
+        pauseFromSwitch: state.pauseConditions?.switchSensors ?: false,
+        motion: getCompanionAttrValue("motion", "inactive"),
+        contact: getCompanionAttrValue("contact", "closed"),
+        pausePresence: getCompanionAttrValue("pausePresence", "not present"),
+        pauseSwitch: getCompanionAttrValue("pauseSwitch", "off")
+    ], true)
+
+    updateFullCycleAverageDeviceData()
+    updateDeviceNextStart()
+    updateDeviceNextStop()
 }
 
 def updateFullCycleAverageDeviceData() {
@@ -820,6 +905,30 @@ def holdIndefiniteHandler(evt) {
     updateDeviceNextStart()    
 }
 
+def getCurrentWindowStartTime() {
+    if (state.backup?.inProgress == true && state.backup?.window?.start != null) return state.backup.window.start
+    if (state.isInMowingWindow == true) {
+        if (isInMowingWindowStartedToday()) return getMowingWindow().start?.getTime()
+        if (isInMowingWindowStartedYesterday()) return getYesterdaysMowingWindow().start?.getTime()
+    }
+    return null
+}
+
+def getNextPrimaryMowingWindowStartTime() {
+    def nowDate = new Date()
+    def window = getMowingWindow()
+    if (!window?.start) return null
+
+    for (Integer dayOffset = 0; dayOffset < 8; dayOffset++) {
+        def candidateDay = nowDate + dayOffset
+        if (isMowDay(candidateDay)) {
+            def candidateStart = window.start + dayOffset
+            if (candidateStart.after(nowDate)) return candidateStart.getTime()
+        }
+    }
+    return null
+}
+
 def updateDeviceNextStart() {
     def earliestNextStart = null
     def isHoldingIndefinitely = false
@@ -830,21 +939,27 @@ def updateDeviceNextStart() {
         logDebug("Backup window pending. Next start: ${new Date(earliestNextStart)}")
     }
     else {
+        earliestNextStart = getNextPrimaryMowingWindowStartTime()
         for (mower in settings["husqvarnaMowers"]) {
-            def nextStart = mower.currentValue("plannerNextStart")
             def holdIndefinite = mower.currentValue("holdIndefinite") ? true : false
             if (isHoldingIndefinitely == false && holdIndefinite == true) isHoldingIndefinitely = true
-            if (earliestNextStart == null) earliestNextStart = nextStart
-            else if (nextStart < earliestNextStart) earliestNextStart = nextStart
         }
     }
 
     def formattedNextStart = "now"
-    if (earliestNextStart != null && earliestNextStart != 0) {
-        Calendar cal = Calendar.getInstance()
-        cal.setTimeZone(TimeZone.getTimeZone('GMT'))
-        cal.setTimeInMillis(earliestNextStart as Long)
-        formattedNextStart = cal.format("h:mm a")
+    if (state.isInMowingWindow == true || state.backup?.inProgress == true) {
+        def earliestExpiration = null
+        state.parkConditionsExpiration.each { key, expireTime ->
+            if (earliestExpiration == null && expireTime != null) earliestExpiration = expireTime
+            else if (earliestExpiration != null && expireTime != null && expireTime < earliestExpiration) earliestExpiration = expireTime
+        }
+        if (earliestExpiration != null) {
+            def expireDate = new Date(earliestExpiration)
+            formattedNextStart = extractTimeFromDate(expireDate)
+        }
+    }
+    else if (earliestNextStart != null && earliestNextStart != 0) {
+        formattedNextStart = extractTimeFromDate(new Date(earliestNextStart))
     }
     else {
         def earliestExpiration = null
@@ -2250,7 +2365,7 @@ def updateAllParkConditions(backupPrecheck = false) {
         state.parkConditions.presence = anyMet
     }
     else state.parkConditions.presence = false
-    if (settings[parkWhenSwitchOnOff] && settings["parkSwitches"] && settings["switchOnOff"]) {
+    if (settings["parkWhenSwitchOnOff"] && settings["parkSwitches"] && settings["switchOnOff"]) {
         def anyMet = false
         for (sw in settings["parkSwitches"]) {
             if (sw.currentValue("switch") == settings["switchOnOff"]) anyMet = true
