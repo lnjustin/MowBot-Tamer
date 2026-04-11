@@ -970,8 +970,9 @@ def updateDeviceNextStart() {
     for (mower in settings["husqvarnaMowers"]) {
         def plannerNextStart = mower.currentValue("plannerNextStart")
         if (plannerNextStart != null && plannerNextStart != "now" && plannerNextStart != "indefinite") {
-            if (mowerPlannerNextStart == null || plannerNextStart < mowerPlannerNextStart) {
-                mowerPlannerNextStart = plannerNextStart
+            def plannerTimeMs = (plannerNextStart as Long)
+            if (mowerPlannerNextStart == null || plannerTimeMs < mowerPlannerNextStart) {
+                mowerPlannerNextStart = plannerTimeMs
             }
         }
     }
@@ -985,6 +986,11 @@ def updateDeviceNextStart() {
         if (earliestExpiration != null) {
             def expireDate = new Date(earliestExpiration)
             formattedNextStart = extractTimeFromDate(expireDate)
+        }
+        
+        // If no park conditions and we have a mower planner next start, show it
+        if (earliestExpiration == null && mowerPlannerNextStart != null) {
+            formattedNextStart = extractTimeFromDate(new Date(mowerPlannerNextStart))
         }
     }
     else if (earliestNextStart != null && earliestNextStart != 0) {
