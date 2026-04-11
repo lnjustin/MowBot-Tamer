@@ -45,6 +45,7 @@ metadata
         
         attribute "minsMowedToday", "number" 
         attribute "minsMowedTodayString", "string"
+        attribute "minsLeftToMowToday", "number"
 
         attribute "minsParkedToday", "number"
         attribute "minsChargingToday", "number"
@@ -57,6 +58,7 @@ metadata
         
         attribute "backupTriggered", "boolean" 
         attribute "backupDuration", "number" 
+        attribute "minsMowingBackupToday", "number"
  
         attribute "forcingPark", "boolean" 
         attribute "forcingPause", "boolean" 

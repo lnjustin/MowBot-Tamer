@@ -348,13 +348,14 @@ def initialize() {
         if (!state.mowers || forceActivationReset) state.mowers = [:]
         for (mower in settings["husqvarnaMowers"]) {
             def serial = mower.currentValue("serialNumber")
-            if (state.mowers[serial] == null) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, mowedDurationToday: 0, timeStartedMowingToday: null, timeStartedParkedToday: null, timeStartedChargingToday: null, timeStartedRestrictedToday: null, parkedDurationToday: 0, chargingDurationToday: 0, restrictedDurationToday: 0, parkEventsToday: 0, parkReasons: [:], current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false, fullMowingSessionStartTime: null, fullChargeCycleStartTime: null, fullChargeCycleStartBattery: null]
+            if (state.mowers[serial] == null) state.mowers[serial] = [name: mower.currentValue("name"), timeStartedMowing: null, timeStoppedMowing: null, mowedDurationSoFar: 0, mowedDurationToday: 0, mowedDurationBackupToday: 0, timeStartedMowingToday: null, timeStartedParkedToday: null, timeStartedChargingToday: null, timeStartedRestrictedToday: null, parkedDurationToday: 0, chargingDurationToday: 0, restrictedDurationToday: 0, parkEventsToday: 0, parkReasons: [:], current: [state: null, activity: null], previous: [state: null, activity: null], parkedByApp: false, pausedByApp: false, userForcingMowing: false, fullMowingSessionStartTime: null, fullChargeCycleStartTime: null, fullChargeCycleStartBattery: null]
             state.mowers[serial].userForcingMowing = false
             state.mowers[serial].parkedByApp = false
             state.mowers[serial].pausedByApp = false
             if (!state.mowers[serial].containsKey("fullMowingSessionStartTime")) state.mowers[serial].fullMowingSessionStartTime = null
             if (!state.mowers[serial].containsKey("fullChargeCycleStartTime")) state.mowers[serial].fullChargeCycleStartTime = null
             if (!state.mowers[serial].containsKey("fullChargeCycleStartBattery")) state.mowers[serial].fullChargeCycleStartBattery = null
+            if (!state.mowers[serial].containsKey("mowedDurationBackupToday")) state.mowers[serial].mowedDurationBackupToday = 0
         }
     }
 
@@ -791,6 +792,7 @@ def resetTodaysMowing() {
 
         // Reset mowing duration
         mower.mowedDurationToday = 0
+        mower.mowedDurationBackupToday = 0
         def isMowing = isMowerMowing(serial)
         mower.timeStartedMowingToday = isMowing ? now : null
 
@@ -816,7 +818,7 @@ def resetTodaysMowing() {
         mower.parkReasons = [:]
     }
     // Update device with reset values immediately so UI shows current data
-    updateDeviceData([minsMowedToday: 0, minsMowedTodayString: formatMinsToTime(0), minsParkedToday: 0, minsChargingToday: 0, minsRestrictedToday: 0, parkEventsToday: 0])
+    updateDeviceData([minsMowedToday: 0, minsMowedTodayString: formatMinsToTime(0), minsLeftToMowToday: msToMins(getRequiredMowingDuration()), minsMowingBackupToday: 0, minsParkedToday: 0, minsChargingToday: 0, minsRestrictedToday: 0, parkEventsToday: 0])
     // Also update next start/stop in case they changed with new day
     updateDeviceNextStart()
     updateDeviceNextStop()
@@ -827,6 +829,7 @@ def trackTodaysMowing() {
     def minDurationParked = null
     def minDurationCharging = null
     def minDurationRestricted = null
+    def minDurationBackup = null
     def totalParkEvents = 0
 
     Long now = new Date().getTime()
@@ -848,6 +851,17 @@ def trackTodaysMowing() {
             durationMowed = mower.mowedDurationToday
         }
         if (minDurationMowed == null || durationMowed < minDurationMowed) minDurationMowed = durationMowed
+
+        // Track backup mowing duration (if currently in backup window and mowing)
+        def isBackupMowing = isBackupMowingScheduledForNow() && (activity == "MOWING" || activity == "LEAVING")
+        def durationBackupMowed = 0
+        if (isBackupMowing) {
+            durationBackupMowed = mower.mowedDurationBackupToday + (now - mower.timeStartedMowing as Long)
+        }
+        else {
+            durationBackupMowed = mower.mowedDurationBackupToday
+        }
+        if (minDurationBackup == null || durationBackupMowed < minDurationBackup) minDurationBackup = durationBackupMowed
 
         // Track parked duration
         def isParked = (activity == "PARKED_IN_CS" || activity == "GOING_HOME")
@@ -890,10 +904,13 @@ def trackTodaysMowing() {
 
     if (minDurationMowed != null) {
         def minsMowed = msToMins(minDurationMowed)
+        def minsBackup = msToMins(minDurationBackup ?: 0)
+        def minsLeftToMow = msToMins(getRequiredMowingDuration()) - minsMowed
+        if (minsLeftToMow < 0) minsLeftToMow = 0
         def minsParked = msToMins(minDurationParked ?: 0)
         def minsCharging = msToMins(minDurationCharging ?: 0)
         def minsRestricted = msToMins(minDurationRestricted ?: 0)
-        updateDeviceData([minsMowedToday: minsMowed, minsMowedTodayString: formatMinsToTime(minsMowed), minsParkedToday: minsParked, minsChargingToday: minsCharging, minsRestrictedToday: minsRestricted, parkEventsToday: totalParkEvents])
+        updateDeviceData([minsMowedToday: minsMowed, minsMowedTodayString: formatMinsToTime(minsMowed), minsLeftToMowToday: minsLeftToMow, minsMowingBackupToday: minsBackup, minsParkedToday: minsParked, minsChargingToday: minsCharging, minsRestrictedToday: minsRestricted, parkEventsToday: totalParkEvents])
     }
 }
 
@@ -947,6 +964,18 @@ def updateDeviceNextStart() {
     }
 
     def formattedNextStart = "now"
+    def mowerPlannerNextStart = null
+    
+    // Get the mower device's planner next start time (fallback when app shows "now")
+    for (mower in settings["husqvarnaMowers"]) {
+        def plannerNextStart = mower.currentValue("plannerNextStart")
+        if (plannerNextStart != null && plannerNextStart != "now" && plannerNextStart != "indefinite") {
+            if (mowerPlannerNextStart == null || plannerNextStart < mowerPlannerNextStart) {
+                mowerPlannerNextStart = plannerNextStart
+            }
+        }
+    }
+    
     if (state.isInMowingWindow == true || state.backup?.inProgress == true) {
         def earliestExpiration = null
         state.parkConditionsExpiration.each { key, expireTime ->
@@ -960,6 +989,17 @@ def updateDeviceNextStart() {
     }
     else if (earliestNextStart != null && earliestNextStart != 0) {
         formattedNextStart = extractTimeFromDate(new Date(earliestNextStart))
+        
+        // Log warning if app and mower device disagree on next start time
+        if (mowerPlannerNextStart != null) {
+            def mowerPlannerTime = new Date(mowerPlannerNextStart)
+            def appPlannerTime = new Date(earliestNextStart)
+            def timeDiff = Math.abs(mowerPlannerTime.getTime() - appPlannerTime.getTime())
+            // Warn if difference is more than 5 minutes
+            if (timeDiff > 5 * 60 * 1000) {
+                log.warn("App and mower device disagree on next start time. App: ${appPlannerTime}, Mower: ${mowerPlannerTime}. Difference: ${msToMins(timeDiff)} mins")
+            }
+        }
     }
     else {
         def earliestExpiration = null
@@ -971,8 +1011,13 @@ def updateDeviceNextStart() {
             def expireDate = new Date(earliestExpiration)
             formattedNextStart = extractTimeFromDate(expireDate)
         }
-        else if (isHoldingIndefinitely) formattedNextStart = "indefinite"
-        // if at least one mower is holding indefinitely in park, with no planned start, and there are no parking conditions set to expire, indicate planned start is indefinite
+        else if (isHoldingIndefinitely) {
+            formattedNextStart = "indefinite"
+        }
+        else if (mowerPlannerNextStart != null) {
+            // Use mower device's planner next start if app has no valid start and would show "now"
+            formattedNextStart = extractTimeFromDate(new Date(mowerPlannerNextStart))
+        }
     }
     updateDeviceData([nextMowingStart: formattedNextStart])
 }
@@ -1791,6 +1836,7 @@ def mowerActivityHandler(evt) {
         if (state.mowers[serial]?.timeStartedMowing != null && state.mowers[serial]?.timeStoppedMowing) {
             def sessionDuration = state.mowers[serial]?.timeStoppedMowing - state.mowers[serial]?.timeStartedMowing
             state.mowers[serial]?.mowedDurationSoFar = state.mowers[serial]?.mowedDurationSoFar + sessionDuration
+            state.mowers[serial]?.mowedDurationBackupToday = (state.mowers[serial]?.mowedDurationBackupToday ?: 0) + sessionDuration
             logDebug("Backup mowing session ended. Session duration: ${msToMins(sessionDuration)} mins. Total mowed so far this backup window: ${msToMins(state.mowers[serial]?.mowedDurationSoFar)} mins")
             state.mowers[serial]?.timeStartedMowing = null // Reset for next mowing session
         }
@@ -1887,6 +1933,7 @@ def handleExpiredBackupMowingWindow() {
             def now = new Date().getTime()
             def finalSessionDuration = now - state.mowers[serial]?.timeStartedMowing
             state.mowers[serial].mowedDurationSoFar = state.mowers[serial].mowedDurationSoFar + finalSessionDuration
+            state.mowers[serial].mowedDurationBackupToday = (state.mowers[serial].mowedDurationBackupToday ?: 0) + finalSessionDuration
             logDebug("Backup window expired while mower still mowing. Adding final session duration: ${msToMins(finalSessionDuration)} mins")
         }
 
