@@ -454,7 +454,7 @@ def refreshCompanionDeviceData() {
         lastStartedMowing: getCompanionAttrValue("lastStartedMowing", "none"),
         lastStoppedMowing: getCompanionAttrValue("lastStoppedMowing", "none"),
         backupTriggered: state.backup?.isPending == true,
-        backupDuration: state.backup?.duration != null ? msToMins(state.backup.duration) : "none",
+        backupDuration: state.backup?.duration != null ? msToMins(state.backup.duration) : 0,
         forcingPark: anyParkedByApp,
         forcingPause: anyPausedByApp,
         forcingMowing: anyForcingMowing,
@@ -739,8 +739,8 @@ def activate() {
                 logDebug("Window Ends ${windowEnd}. Stop By Time is ${stopByDurationDate}")
                 if (windowEnd.after(stopByDurationDate) && stopByDurationDate.after(new Date())) {
                     logDebug("Scheduling premature park for ${stopByDurationDate}")
-                    runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
                     state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
+                    runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial, stopAt: stopByDurationDate.getTime()], overwrite: false])
                     updateDeviceNextStop()
                 }
             }
@@ -763,9 +763,9 @@ def activate() {
                 def stopByDuration = state.mowers[serial]?.timeStartedMowing + (durationLeftToMow > 0 ? durationLeftToMow : 0)
                 def stopByDurationDate = new Date(stopByDuration)
                 def windowEnd = new Date(state.backup.window.end)
-                if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
-                    runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
+                if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(new Date())) {
                     state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
+                    runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial, stopAt: stopByDurationDate.getTime()], overwrite: false])
                     updateDeviceNextStop()
                 }
             }
@@ -1084,8 +1084,8 @@ def subscribeForParkPause(forcedMowing = false) {
         if (settings["parkWhenSwitchOnOff"] == true && settings["parkSwitches"] != null) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)  
     }
     else {
-        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness)) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
-        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Wet Grass: Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity)) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Leaf Wetness Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.leafWetness)) subscribe(settings["leafWetnessSensor"], "leafWetness", leafWetnessHandler)
+        if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Humidity or Soil Moisture Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.humidity)) subscribe(settings["humidityMeasurement"], "humidity", humidityHandler)
         if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Temperature Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.temperature)) subscribe(settings["parkTempSensor"], "temperature", temperatureHandler)  
         if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Presence Sensor") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.presence)) subscribe(settings["presenceSensors"], "presence", parkOnPresenceHandler)
         if (settings["forcedMowingParkConditionsEnforced"] != null && settings["forcedMowingParkConditionsEnforced"].contains("Switch(es)") && (state.forcedMowingParkConditionSnapshot == null || !state.forcedMowingParkConditionSnapshot.switchSensors)) subscribe(settings["parkSwitches"], "switch", parkOnSwitchHandler)      
@@ -1543,7 +1543,7 @@ def endBackupWindow() {
         runIn(settings["pollingInterval"], endBackupGracePeriod)
         updateDeviceData([windowEnd: "none"])
         updateDeviceData([windowStart: "none"])
-        updateDeviceData([backupTriggered: false, backupDuration: "none"])
+        updateDeviceData([backupTriggered: false, backupDuration: 0])
         state.windowEnd = null
         updateDeviceNextStop()
     }
@@ -1657,7 +1657,7 @@ def forceMowing(serial) {
     state.mowers[serial]?.pausedByApp = false    
     
     updateAllParkConditions()
-    state.forcedMowingParkConditionSnapshot = state.parkConditions // TO DO: ignore any conditions that were already met when the user forced mowing, since user obviously doesn't want to enforce these
+    state.forcedMowingParkConditionSnapshot = state.parkConditions.collectEntries { key, value -> [(key): value] } // capture a snapshot so later park-condition updates are compared against the original forced-mowing state
     
     subscribeForParkPause(true)
 }
@@ -1773,8 +1773,6 @@ def mowerActivityHandler(evt) {
         }
 
         unschedule(park)
-        unschedule(parkPrematurely)
-
         // If mowing for the full mowing window, mower will park itself according to the schedule.
         // But if mowing for a duration less than the full mowing window, schedule pre-mature park here
         // Scheduling this only after mowing has begun during the current mowing window prevents overlapping scheduling when mowing window starts on one day and ends on the next day. That is, only one mowing start call needs to be scheduled at a time and only one mowing end call needs to be scheduled at a time, even if the mowing window straddles midnight
@@ -1786,7 +1784,7 @@ def mowerActivityHandler(evt) {
         if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
             logDebug("Will be finished mowing before end of the mowing window. Scheduling premature park for ${stopByDurationDate}")
             state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
-            runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
+            runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial, stopAt: stopByDurationDate.getTime()], overwrite: false])
         }
 
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
@@ -1816,8 +1814,6 @@ def mowerActivityHandler(evt) {
         }
 
         unschedule(park)
-        unschedule(parkPrematurely)
-
         // If mowing for the full mowing window, mower will park itself according to the schedule.
         // But if mowing for a duration less than the full mowing window, schedule pre-mature park here
         // Scheduling this only after mowing has begun during the current mowing window prevents overlapping scheduling when mowing window starts on one day and ends on the next day. That is, only one mowing start call needs to be scheduled at a time and only one mowing end call needs to be scheduled at a time, even if the mowing window straddles midnight
@@ -1827,8 +1823,8 @@ def mowerActivityHandler(evt) {
         def windowEnd = new Date(state.backup.window.end)
         logDebug("Backup window: ${msToMins(state.mowers[serial]?.mowedDurationSoFar)} mins already mowed. ${msToMins(durationLeftToMow)} mins left to mow")
         if (windowEnd && windowEnd.after(stopByDurationDate) && stopByDurationDate.after(now)) {
-            runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial], overwrite: false])
             state.mowers[serial]?.plannedStopMowingTime = stopByDurationDate.getTime()
+            runOnce(stopByDurationDate, parkPrematurely, [data: [serial: serial, stopAt: stopByDurationDate.getTime()], overwrite: false])
         }
 
         if (state.mowers[serial]?.parkedByApp == true || state.mowers[serial]?.pausedByApp == true) {
@@ -1863,6 +1859,11 @@ def mowerActivityHandler(evt) {
 
 def parkPrematurely(data) {
     def serial = data.serial
+    def scheduledStop = data.stopAt
+    if (scheduledStop != null && state.mowers[serial]?.plannedStopMowingTime != scheduledStop) {
+        logDebug("Ignoring stale premature park for ${serial}. Scheduled stop ${scheduledStop} does not match current planned stop ${state.mowers[serial]?.plannedStopMowingTime}")
+        return
+    }
     parkOne(serial)
     state.mowers[serial]?.plannedStopMowingTime = null
     updateDeviceNextStop()
@@ -1976,7 +1977,7 @@ def handleExpiredBackupMowingWindow() {
 
     if (!anyMowerForcingMowing()) unsubscribeForParkPause()
 
-    updateDeviceData([backupTriggered: false, backupDuration: "none"])
+    updateDeviceData([backupTriggered: false, backupDuration: 0])
 
     // Update device with latest next start/stop times after backup window expires
     updateDeviceNextStart()
