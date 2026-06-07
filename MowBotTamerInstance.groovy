@@ -31,6 +31,7 @@
  *  v0.0.16 - Fixed inactive child apps parking mowers
  *  v0.0.17 - Bug fixes for dynamic height, mins mowed
  *  v0.0.18 - Added running averages for full mowing and charging cycles
+ *  v0.0.19 - fixed backupDuration = none bug for influxDBLogger
  */
 import java.text.SimpleDateFormat
 import groovy.transform.Field
