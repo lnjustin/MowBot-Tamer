@@ -427,6 +427,41 @@ def getConditionStatus(conditionState, configured, thresholdTimes, attrName) {
     return "Below"
 }
 
+def updateAggregateSensorThresholdState(conditionState, configuredSensors, thresholdTimes) {
+    if (conditionState == null) return [numAbove: 0, numBelow: thresholdTimes ?: 0, status: "Below", met: false]
+
+    def threshold = thresholdTimes ?: 0
+    def sensors = configuredSensors instanceof Collection ? configuredSensors : (configuredSensors ? [configuredSensors] : [])
+    def trackedSensors = conditionState.bySensor instanceof Map ? conditionState.bySensor : [:]
+    def sensorStates = []
+
+    for (sensor in sensors) {
+        def sensorId = sensor?.id?.toString()
+        if (sensorId != null && trackedSensors[sensorId] instanceof Map) sensorStates << trackedSensors[sensorId]
+    }
+
+    if (sensorStates.isEmpty()) {
+        def above = conditionState?.numAbove ?: 0
+        def below = conditionState?.numBelow ?: 0
+        if (threshold > 0 && above >= threshold) return [numAbove: above, numBelow: 0, status: "Above", met: true]
+        if (above > 0) return [numAbove: above, numBelow: 0, status: "Transitioning Above", met: false]
+        if (threshold > 0 && below >= threshold) return [numAbove: 0, numBelow: below, status: "Below", met: false]
+        if (below > 0) return [numAbove: 0, numBelow: below, status: "Transitioning Below", met: false]
+        return [numAbove: 0, numBelow: threshold, status: "Below", met: false]
+    }
+
+    def maxAbove = sensorStates.collect { it?.numAbove ?: 0 }.max() ?: 0
+    def minBelow = sensorStates.collect { it?.numBelow ?: 0 }.min() ?: 0
+    def anyAboveTransitioning = sensorStates.any { (it?.numAbove ?: 0) > 0 }
+    def anyBelowTransitioning = sensorStates.any { (it?.numBelow ?: 0) > 0 }
+
+    if (threshold > 0 && maxAbove >= threshold) return [numAbove: maxAbove, numBelow: 0, status: "Above", met: true]
+    if (anyAboveTransitioning) return [numAbove: maxAbove, numBelow: 0, status: "Transitioning Above", met: false]
+    if (threshold > 0 && minBelow >= threshold) return [numAbove: 0, numBelow: minBelow, status: "Below", met: false]
+    if (anyBelowTransitioning) return [numAbove: 0, numBelow: minBelow, status: "Transitioning Below", met: false]
+    return [numAbove: 0, numBelow: threshold, status: "Below", met: false]
+}
+
 def refreshCompanionDeviceData() {
     def child = getChildDevice("MowBotTamerDevice${app.id}")
     if (!child) return
@@ -2166,9 +2201,12 @@ def parkAll(preCheckPark = false) {
         def mowerState = mower.currentValue("mowerState")
         def serialNum = mower.currentValue("serialNumber")
         if (state.mowers[serialNum]?.parkedByApp == false) { // avoids sending duplicate commands
-            def isParked = (mower.currentValue("mowerActivity") == "PARKED_IN_CS" || mower.currentValue("mowerActivity") == "GOING_HOME" || mower.currentValue("mowerActivity") == "CHARGING" || mower.currentValue("parked") == true) ? true : false
-            def requiresManualAction =  (mower.currentValue("mowerActivity") == "STOPPED_IN_GARDEN" || mower.currentValue("mowerActivity") == "NOT_APPLICABLE") ? true : false
-            if ((mowerState == "IN_OPERATION" && !requiresManualAction) || mowerState == "PAUSED" || mowerState == "WAIT_UPDATING" || mowerState == "WAIT_POWER_UP" || (isParked && preCheckPark)) {
+            def activity = mower.currentValue("mowerActivity")
+            def isParked = (activity == "PARKED_IN_CS" || activity == "GOING_HOME" || activity == "CHARGING" || mower.currentValue("parked") == true) ? true : false
+            def isActive = (activity == "MOWING" || activity == "LEAVING") ? true : false
+            def requiresManualAction =  (activity == "STOPPED_IN_GARDEN" || activity == "NOT_APPLICABLE") ? true : false
+            def stateAllowsParking = (mowerState == "IN_OPERATION" || mowerState == "PAUSED" || mowerState == "WAIT_UPDATING" || mowerState == "WAIT_POWER_UP")
+            if (!requiresManualAction && (isActive || isParked || stateAllowsParking)) {
                 // send park command even if already parked, because park command is to park indefintely, and may be parked temporarily
                 state.mowers[serialNum]?.parkedByApp = true
                 state.mowers[serialNum]?.pausedByApp = false
@@ -2177,7 +2215,7 @@ def parkAll(preCheckPark = false) {
                 notify("${app.label} Mowing Stopped", "stopStart")
                 anyParked = true
             }
-            else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
+            else logDebug("Park command not sent for ${serialNum}. mowerState=${mowerState}, mowerActivity=${activity}, parked=${mower.currentValue("parked")}, requiresManualAction=${requiresManualAction}, preCheckPark=${preCheckPark}")
         }
         else logDebug("Park command not sent. Mower already parked by app.")
     }
@@ -2195,10 +2233,11 @@ def parkOne(serial, preCheckPark = false) {
            def mowerState = mower.currentValue("mowerState")
            if (state.mowers[serialNum]?.parkedByApp == false) { // avoids sending duplicate commands
                def activity = mower.currentValue("mowerActivity")
-               // TO DO: avoid sending repeat park commands when already sent command and going home. Maybe hold off until mower state updates? So rate-limit park commands based on poll interval.
-               def isParked = (mower.currentValue("mowerActivity") == "PARKED_IN_CS" || mower.currentValue("mowerActivity") == "GOING_HOME" || mower.currentValue("mowerActivity") == "CHARGING" || mower.currentValue("parked") == true) ? true : false
-               def requiresManualAction =  (mower.currentValue("mowerActivity") == "STOPPED_IN_GARDEN" || mower.currentValue("mowerActivity") == "NOT_APPLICABLE") ? true : false
-                if ((mowerState == "IN_OPERATION" && !requiresManualAction) || mowerState == "PAUSED" || mowerState == "WAIT_UPDATING" || mowerState == "WAIT_POWER_UP" || (isParked && preCheckPark)) {
+               def isParked = (activity == "PARKED_IN_CS" || activity == "GOING_HOME" || activity == "CHARGING" || mower.currentValue("parked") == true) ? true : false
+               def isActive = (activity == "MOWING" || activity == "LEAVING") ? true : false
+               def requiresManualAction =  (activity == "STOPPED_IN_GARDEN" || activity == "NOT_APPLICABLE") ? true : false
+               def stateAllowsParking = (mowerState == "IN_OPERATION" || mowerState == "PAUSED" || mowerState == "WAIT_UPDATING" || mowerState == "WAIT_POWER_UP")
+                if (!requiresManualAction && (isActive || isParked || stateAllowsParking)) {
                 // send park command even if already parked, because park command is to park indefintely, and may be parked temporarily
                    state.mowers[serialNum]?.parkedByApp = true
                    state.mowers[serialNum]?.pausedByApp = false
@@ -2214,7 +2253,7 @@ def parkOne(serial, preCheckPark = false) {
                    notify("${app.label} Mowing Stopped", "stopStart")
                    didPark = true
                }
-               else logDebug("Park command not sent. Mower either already parked or going to park, or requires manual action.")
+               else logDebug("Park command not sent for ${serialNum}. mowerState=${mowerState}, mowerActivity=${activity}, parked=${mower.currentValue("parked")}, requiresManualAction=${requiresManualAction}, preCheckPark=${preCheckPark}")
             }
            else logDebug("Park command not sent. Mower already parked by app.")
        }
@@ -2499,36 +2538,42 @@ def parkOnSwitchHandler(evt) {
 def leafWetnessHandler(evt) {
     def leafWetness = evt.value.toInteger()
     if (state.leafWetness == null) state.leafWetness = [:]
+    if (!(state.leafWetness.bySensor instanceof Map)) state.leafWetness.bySensor = [:]
+
     def leafThresh = settings["leafWetnessThreshold"]
     if (anyMowerForcingMowing()) leafThresh = settings["leafWetnessThresholdForced"]
     else if (isBackupMowingScheduledForNow()) leafThresh = settings["leafWetnessThresholdBackup"]
-    if (leafWetness >= leafThresh) {
-        if (state.leafWetness.numAbove == null) {
-           state.leafWetness.numAbove = 1
-        }
-        else state.leafWetness.numAbove++
-        state.leafWetness.numBelow = 0    
+
+    def sensorId = evt.deviceId?.toString() ?: evt.getDevice()?.id?.toString() ?: evt.getDevice()?.displayName ?: "default"
+    if (!(state.leafWetness.bySensor[sensorId] instanceof Map)) state.leafWetness.bySensor[sensorId] = [numAbove: 0, numBelow: 0]
+
+    if (leafThresh && leafWetness >= leafThresh) {
+        state.leafWetness.bySensor[sensorId].numAbove = (state.leafWetness.bySensor[sensorId].numAbove ?: 0) + 1
+        state.leafWetness.bySensor[sensorId].numBelow = 0
     }
     else {
-        if (state.leafWetness.numBelow  == null) state.leafWetness.numBelow  = 1
-        else state.leafWetness.numBelow ++
-        state.leafWetness.numAbove = 0  
+        state.leafWetness.bySensor[sensorId].numBelow = (state.leafWetness.bySensor[sensorId].numBelow ?: 0) + 1
+        state.leafWetness.bySensor[sensorId].numAbove = 0
     }
-    
-    if (state.leafWetness.numAbove != null && state.leafWetness.numAbove >= settings["leafWetnessThresholdTimes"]) {
+
+    def aggregate = updateAggregateSensorThresholdState(state.leafWetness, settings["leafWetnessSensor"], settings["leafWetnessThresholdTimes"])
+    state.leafWetness.numAbove = aggregate.numAbove
+    state.leafWetness.numBelow = aggregate.numBelow
+
+    if (aggregate.status == "Above") {
         state.parkConditions.leafWetness = true
-        updateDeviceData([leafWetnessStatus: "Above"])  
+        updateDeviceData([leafWetnessStatus: "Above"])
         handleParkConditionChange()
     }
-    else if (state.leafWetness.numAbove != null && state.leafWetness.numAbove > 0 && state.leafWetness.numAbove < settings["leafWetnessThresholdTimes"]) {
-        updateDeviceData([leafWetnessStatus: "Transitioning Above"])    
+    else if (aggregate.status == "Transitioning Above") {
+        updateDeviceData([leafWetnessStatus: "Transitioning Above"])
     }
-    else if (state.leafWetness.numBelow != null && state.leafWetness.numBelow > 0 && state.leafWetness.numBelow < settings["leafWetnessThresholdTimes"]) {
-        updateDeviceData([leafWetnessStatus: "Transitioning Below"])    
+    else if (aggregate.status == "Transitioning Below") {
+        updateDeviceData([leafWetnessStatus: "Transitioning Below"])
     }
-    else if (state.leafWetness.numBelow  != null && state.leafWetness.numBelow  >= settings["leafWetnessThresholdTimes"]) {
+    else {
         state.parkConditions.leafWetness = false
-        updateDeviceData([leafWetnessStatus: "Below"])  
+        updateDeviceData([leafWetnessStatus: "Below"])
         handleParkConditionChange()
     }
 }
